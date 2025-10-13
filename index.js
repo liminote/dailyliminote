@@ -21,7 +21,7 @@ const serviceAccountAuth = new JWT({
   key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'), // 將環境變數中的 \n 轉為換行符
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
-const SPREADSHEET_ID = '你的試算表ID'; // ⚠️ 請務必換成你自己的 Google Sheet ID
+const SPREADSHEET_ID = '1TMyXHW2BaYJ3l8p1EdCQfb9Vhx_fJUrAZAEVOSBiom0'; // ⚠️ 請務必換成你自己的 Google Sheet ID
 const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
 
 // 建立 LINE 和 Express 的物件
