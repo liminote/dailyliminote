@@ -132,10 +132,22 @@ async function handlePostback(event) {
   const userId = event.source.userId;
   const data = event.postback.data;
   const replyToken = event.replyToken;
+  const userSheet = doc.sheetsByTitle['Users'];
+
   const params = {};
   data.split('&').forEach(pair => { const [key, value] = pair.split('='); params[key] = decodeURIComponent(value); });
 
-  if (params.action === 'select_theme') {
+  const user = await getOrCreateUser(userId, userSheet);
+
+  if (params.action === 'ready') { // 👈 新增了這個區塊
+    const themeSelectMsg = await getMessage('THEME_SELECT');
+    if (themeSelectMsg) {
+      const message = createMessageObject(themeSelectMsg.message, themeSelectMsg.buttons);
+      await client.replyMessage(replyToken, message);
+    } else {
+      await client.replyMessage(replyToken, { type: 'text', text: '好的，你想選擇什麼主題呢？' });
+    }
+  } else if (params.action === 'select_theme') {
     await handleThemeSelection(replyToken, userId, params.theme);
   } else if (params.action === 'start_week') {
     const startMsg = await getMessage('START_READY');
