@@ -118,18 +118,22 @@ async function handleTextMessage(event) {
   const userSheet = doc.sheetsByTitle['Users'];
   let user = await getOrCreateUser(userId, userSheet);
 
-  // [修改] 加上 user.status === 'waiting_monday' 的判斷
   if (!user.status || user.status === 'new' || user.status === 'idle' || user.status === 'waiting_monday') {
     await sendWelcomeMessage(replyToken, userId, userSheet);
   } else if (user.status === 'waiting_theme') {
-    await client.replyMessage(replyToken, { type: 'text', text: '請點選上方按鈕選擇你想探索的主題 😊' });
+    const msg = await getMessage('PROMPT_THEME_CHOICE');
+    await client.replyMessage(replyToken, { type: 'text', text: msg ? msg.message : '請點選上方按鈕選擇你想探索的主題 😊' });
   } else if (user.status === 'waiting_answer') {
     await saveUserAnswer(userId, event.message.text);
     const heardMsg = await getMessage('HEARD');
     await client.replyMessage(replyToken, { type: 'text', text: heardMsg ? heardMsg.message : '聽到了。' });
     await updateUserStatus(userId, 'active');
+  } else if (user.status === 'active') {
+    const msg = await getMessage('ACK_ACTIVE');
+    await client.replyMessage(replyToken, { type: 'text', text: msg ? msg.message : '好的，我們明天早上 9 點見！🌱' });
   } else {
-    await client.replyMessage(replyToken, { type: 'text', text: '我會在每週一開始新的循環。期待與你對話 🌱' });
+    const msg = await getMessage('FALLBACK_GENERAL');
+    await client.replyMessage(replyToken, { type: 'text', text: msg ? msg.message : '我好像有點不太明白…' });
   }
 }
 
