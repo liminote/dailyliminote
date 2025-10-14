@@ -27,6 +27,10 @@ const client = new line.Client(lineConfig);
 const app = express();
 
 // --- 2. Webhook 進入點 ---
+// 增加一個根路徑的 GET 請求處理器，用來回應 UptimeRobot
+app.get('/', (req, res) => {
+  res.status(200).send('OK');
+});
 
 app.post('/webhook', line.middleware(lineConfig), (req, res) => {
   if (!req.body.events || req.body.events.length === 0) {
