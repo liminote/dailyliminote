@@ -143,7 +143,12 @@ async function handlePostback(event) {
 
   const user = await getOrCreateUser(userId, userSheet);
 
-  if (params.action === 'ready') {
+  if (params.action === 'start_now') { // 👈 新增這個區塊，讓使用者可以馬上開始
+    const startMsg = await getMessage('START_READY');
+    const message = createMessageObject(startMsg ? startMsg.message : '收到。接下來會問你，這週想關注什麼主題。', startMsg ? startMsg.buttons : null);
+    await client.replyMessage(replyToken, message);
+    await updateUserStatus(userId, 'waiting_theme');
+  } else if (params.action === 'ready') {
     const themeSelectMsg = await getMessage('THEME_SELECT');
     if (themeSelectMsg) {
       const message = createMessageObject(themeSelectMsg.message, themeSelectMsg.buttons);
@@ -165,9 +170,9 @@ async function handlePostback(event) {
     const laterMsg = await getMessage('LATER');
     await client.replyMessage(replyToken, { type: 'text', text: laterMsg ? laterMsg.message : '好的。當你準備好，隨時可以回來。' });
     await updateUserStatus(userId, 'waiting_monday');
-  } else if (params.action === 'show_record') { // 👈 新增週日功能佔位
+  } else if (params.action === 'show_record') {
     await client.replyMessage(replyToken, { type: 'text', text: '好的，正在為您整理本週紀錄... (此功能開發中)' });
-  } else if (params.action === 'get_insight') { // 👈 新增週日功能佔位
+  } else if (params.action === 'get_insight') {
     await client.replyMessage(replyToken, { type: 'text', text: '好的，正在為您產生 AI 總結... (此功能開發中)' });
   }
 }
