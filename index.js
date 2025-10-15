@@ -1,5 +1,5 @@
 // ========================================
-// 隙音 LINE Bot - Render 最終完整版
+// 隙音 LINE Bot - Render 最終同步版
 // ========================================
 const express = require('express');
 const line = require('@line/bot-sdk');
@@ -20,14 +20,14 @@ const serviceAccountAuth = new JWT({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-const SPREADSHEET_ID = '1TMyXHW2BaYJ3l8p1EdCQfb9Vhx_fJUrAZAEVOSBiom0'; // ⚠️ 請務必換成你自己的 Google Sheet ID
+const SPREADSHEET_ID = '你的試算表ID'; // ⚠️ 請務必確認這裡是你正確的 Google Sheet ID
 const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
 
 const client = new line.Client(lineConfig);
 const app = express();
 
 // --- 2. Webhook 進入點 ---
-// 增加一個根路徑的 GET 請求處理器，用來回應 UptimeRobot
+
 app.get('/', (req, res) => {
   res.status(200).send('OK');
 });
@@ -91,7 +91,6 @@ cron.schedule('0 20 * * 0', async () => {
   }
 }, { timezone: "Asia/Taipei" });
 
-
 // --- 4. 核心程式碼邏輯 ---
 
 const THEME_MAP = { 'SELF': '自己', 'CREATION': '創作', 'FAMILY': '家庭' };
@@ -141,14 +140,10 @@ async function handlePostback(event) {
   const userId = event.source.userId;
   const data = event.postback.data;
   const replyToken = event.replyToken;
-  const userSheet = doc.sheetsByTitle['Users'];
-
   const params = {};
   data.split('&').forEach(pair => { const [key, value] = pair.split('='); params[key] = decodeURIComponent(value); });
 
-  const user = await getOrCreateUser(userId, userSheet);
-
-  if (params.action === 'start_now') { // 👈 新增這個區塊，讓使用者可以馬上開始
+  if (params.action === 'start_now') {
     const startMsg = await getMessage('START_READY');
     const message = createMessageObject(startMsg ? startMsg.message : '收到。接下來會問你，這週想關注什麼主題。', startMsg ? startMsg.buttons : null);
     await client.replyMessage(replyToken, message);
@@ -194,7 +189,8 @@ async function handleThemeSelection(replyToken, userId, theme) {
   }
 }
 
-async function sendWelcomeMessage(replyToken, userId, userSheet) {
+async function sendWelcomeMessage(replyToken, userId) {
+  const userSheet = doc.sheetsByTitle['Users'];
   const today = new Date().getDay();
   const messageId = (today === 1) ? 'WELCOME_MONDAY' : 'WELCOME_OTHER_DAY';
   const welcomeMsg = await getMessage(messageId);
@@ -300,7 +296,7 @@ async function sendMondayThemeSelection() {
     const userSheet = doc.sheetsByTitle['Users'];
     const rows = await userSheet.getRows();
     const mondayMsg = await getMessage('MONDAY_WEEK1');
-    if (!mondayMsg) return;
+    if (!mondayMsg) { console.error("Message 'MONDAY_WEEK1' not found."); return; }
 
     for (const row of rows) {
         if (row.get('status') === 'active' || row.get('status') === 'waiting_monday') {
@@ -329,6 +325,15 @@ async function sendDailyQuestion() {
       if (question) {
         let messageText = '';
         const themeChinese = THEME_MAP[theme] || theme;
+        
+        const yesterdayAnswered = await checkYesterdayAnswer(userId);
+        const today = new Date().getDay();
+        if (!yesterdayAnswered && today > 2) { 
+          const skipMsg = await getMessage('SKIP_YESTERDAY');
+          if(skipMsg) {
+            messageText += skipMsg.message + '\n\n';
+          }
+        }
         
         const dailyMsg = await getMessage('DAILY_QUESTION');
         if (dailyMsg) {
@@ -378,6 +383,30 @@ async function sendSundayReview() {
 }
 
 // --- 7. 輔助工具函式 ---
+
+async function checkYesterdayAnswer(userId) {
+  const answerSheet = doc.sheetsByTitle['Answers'];
+  const rows = await answerSheet.getRows();
+  
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayString = yesterday.toISOString().split('T')[0];
+
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i];
+    if (row.get('userId') === userId) {
+      const answerDate = new Date(row.get('timestamp'));
+      const answerDateString = answerDate.toISOString().split('T')[0];
+      if (answerDateString === yesterdayString) {
+        return true;
+      }
+      if (answerDate < yesterday) {
+          return false;
+      }
+    }
+  }
+  return false;
+}
 
 async function countWeeklyResponses(userId, week) {
   const answerSheet = doc.sheetsByTitle['Answers'];
