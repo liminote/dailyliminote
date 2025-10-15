@@ -20,7 +20,7 @@ const serviceAccountAuth = new JWT({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-const SPREADSHEET_ID = '你的試算表ID'; // ⚠️ 請務必確認這裡是你正確的 Google Sheet ID
+const SPREADSHEET_ID = '1TMyXHW2BaYJ3l8p1EdCQfb9Vhx_fJUrAZAEVOSBiom0'; // ⚠️ 請務必確認這裡是你正確的 Google Sheet ID
 const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
 
 const client = new line.Client(lineConfig);
