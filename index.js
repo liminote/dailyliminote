@@ -1,5 +1,5 @@
 // ========================================
-// 隙音 LINE Bot - Render (V2 - 邏輯修正完整版)
+// 隙音 LINE Bot - Render (V2.6 - 終極全文案外部化 最終版)
 // ========================================
 const express = require('express');
 const line = require('@line/bot-sdk');
@@ -108,10 +108,33 @@ cron.schedule('0 20 * * 0', async () => {
   }
 }, { timezone: "Asia/Taipei" });
 
+cron.schedule('0 22 * * *', async () => {
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+  if (tomorrow.getDate() === 1) {
+    console.log('Running: sendMonthlyReview @ 10:00 PM on Last Day of Month');
+    try {
+      await doc.loadInfo();
+      await sendMonthlyReview();
+    } catch (err) {
+      console.error('Error in sendMonthlyReview cron job:', err);
+    }
+  }
+}, { timezone: "Asia/Taipei" });
 
-// --- 4. 核心互動邏輯 ---
+
+// --- 4. 核心程式碼邏輯 ---
 
 const THEME_MAP = { 'SELF': '自己', 'CREATION': '創作', 'FAMILY': '家庭' };
+
+async function replyWithText(replyToken, messageId, fallbackId = 'GENERIC_ERROR') {
+    let msg = await getMessage(messageId);
+    if (!msg) {
+        msg = await getMessage(fallbackId);
+    }
+    await client.replyMessage(replyToken, { type: 'text', text: msg ? msg.message : '系統發生錯誤' });
+}
 
 function createMessageObject(text, buttons) {
   let message = { type: 'text', text: text };
@@ -138,19 +161,15 @@ async function handleTextMessage(event) {
   if (!user.status || user.status === 'new' || user.status === 'idle' || user.status === 'waiting_monday') {
     await sendWelcomeMessage(replyToken, userId);
   } else if (user.status === 'waiting_theme') {
-    const msg = await getMessage('PROMPT_THEME_CHOICE');
-    await client.replyMessage(replyToken, { type: 'text', text: msg ? msg.message : '請點選上方按鈕選擇你想探索的主題 😊' });
+    await replyWithText(replyToken, 'PROMPT_THEME_CHOICE');
   } else if (user.status === 'waiting_answer') {
     await saveUserAnswer(userId, event.message.text);
-    const heardMsg = await getMessage('HEARD');
-    await client.replyMessage(replyToken, { type: 'text', text: heardMsg ? heardMsg.message : '聽到了。' });
+    await replyWithText(replyToken, 'HEARD');
     await updateUserStatus(userId, 'active');
   } else if (user.status === 'active') {
-    const msg = await getMessage('ACK_ACTIVE');
-    await client.replyMessage(replyToken, { type: 'text', text: msg ? msg.message : '好的，我們明天早上 9 點見！🌱' });
+    await replyWithText(replyToken, 'ACK_ACTIVE');
   } else {
-    const msg = await getMessage('FALLBACK_GENERAL');
-    await client.replyMessage(replyToken, { type: 'text', text: msg ? msg.message : '我好像有點不太明白…' });
+    await replyWithText(replyToken, 'FALLBACK_GENERAL');
   }
 }
 
@@ -161,40 +180,50 @@ async function handlePostback(event) {
   const params = {};
   data.split('&').forEach(pair => { const [key, value] = pair.split('='); params[key] = decodeURIComponent(value); });
 
-  if (params.action === 'start_now') {
-    const startMsg = await getMessage('START_READY');
-    const message = createMessageObject(startMsg ? startMsg.message : '收到。接下來會問你，這週想關注什麼主題。', startMsg ? startMsg.buttons : null);
-    await client.replyMessage(replyToken, message);
-    await updateUserStatus(userId, 'waiting_theme');
-  } else if (params.action === 'ready') {
-    const themeSelectMsg = await getMessage('THEME_SELECT');
-    if (themeSelectMsg) {
-      const message = createMessageObject(themeSelectMsg.message, themeSelectMsg.buttons);
+  let msg;
+  let text;
+  let message;
+
+  switch (params.action) {
+    case 'start_now':
+    case 'start_week':
+      msg = await getMessage('START_READY');
+      text = msg ? msg.message : (await getMessage('START_READY_FALLBACK')).message;
+      message = createMessageObject(text, msg ? msg.buttons : null);
       await client.replyMessage(replyToken, message);
-    } else {
-      await client.replyMessage(replyToken, { type: 'text', text: '好的，你想選擇什麼主題呢？' });
-    }
-  } else if (params.action === 'select_theme') {
-    await handleThemeSelection(replyToken, userId, params.theme);
-  } else if (params.action === 'start_week') {
-    const startMsg = await getMessage('START_READY');
-    const message = createMessageObject(startMsg ? startMsg.message : '收到。接下來會問你，這週想關注什麼主題。', startMsg ? startMsg.buttons : null);
-    await client.replyMessage(replyToken, message);
-    await updateUserStatus(userId, 'waiting_theme');
-  } else if (params.action === 'how_to_play') {
-    const howToMsg = await getMessage('HOW_TO_PLAY');
-    await client.replyMessage(replyToken, { type: 'text', text: howToMsg ? howToMsg.message : '每週流程...' });
-  } else if (params.action === 'later') {
-    const laterMsg = await getMessage('LATER');
-    await client.replyMessage(replyToken, { type: 'text', text: laterMsg ? laterMsg.message : '好的。當你準備好，隨時可以回來。' });
-    await updateUserStatus(userId, 'waiting_monday');
-  } else if (params.action === 'show_record') {
-    const recordsText = await getWeeklyRecords(userId);
-    await client.replyMessage(replyToken, { type: 'text', text: recordsText });
-  } else if (params.action === 'get_insight') {
-    await client.replyMessage(replyToken, { type: 'text', text: '好的，正在為您產生 AI 總結，請稍候幾秒鐘...' });
-    const insightText = await generateAiInsight(userId);
-    await client.pushMessage(userId, { type: 'text', text: insightText });
+      await updateUserStatus(userId, 'waiting_theme');
+      break;
+    
+    case 'ready':
+      msg = await getMessage('THEME_SELECT');
+      text = msg ? msg.message : (await getMessage('THEME_SELECT_FALLBACK')).message;
+      message = createMessageObject(text, msg ? msg.buttons : null);
+      await client.replyMessage(replyToken, message);
+      break;
+
+    case 'select_theme':
+      await handleThemeSelection(replyToken, userId, params.theme);
+      break;
+
+    case 'how_to_play':
+      await replyWithText(replyToken, 'HOW_TO_PLAY', 'HOW_TO_PLAY_FALLBACK');
+      break;
+
+    case 'later':
+      await replyWithText(replyToken, 'LATER', 'LATER_FALLBACK');
+      await updateUserStatus(userId, 'waiting_monday');
+      break;
+
+    case 'show_record':
+      const recordsText = await getWeeklyRecords(userId);
+      await client.replyMessage(replyToken, { type: 'text', text: recordsText });
+      break;
+
+    case 'get_insight':
+      await client.replyMessage(replyToken, { type: 'text', text: '好的，正在為您產生 AI 總結，請稍候幾秒鐘...' }); // This is system feedback, not user-facing content, so it's ok to be here.
+      const insightText = await generateAiInsight(userId);
+      await client.pushMessage(userId, { type: 'text', text: insightText });
+      break;
   }
 }
 
@@ -205,13 +234,14 @@ async function handleThemeSelection(replyToken, userId, theme) {
   if (confirmMsg) {
     await client.replyMessage(replyToken, { type: 'text', text: confirmMsg.message });
   } else {
+    const fallbackMsg = await getMessage('THEME_CONFIRM_FALLBACK');
     const themeChinese = THEME_MAP[theme] || '這個主題';
-    await client.replyMessage(replyToken, { type: 'text', text: `收到。\n\n這週，我們一起關注「${themeChinese}」。` });
+    const text = fallbackMsg ? fallbackMsg.message.replace('【主題】', themeChinese) : `收到。\n\n這週，我們一起關注「${themeChinese}」。`;
+    await client.replyMessage(replyToken, { type: 'text', text: text });
   }
 }
 
 async function sendWelcomeMessage(replyToken, userId) {
-  const userSheet = doc.sheetsByTitle['Users'];
   const today = new Date().getDay();
   const messageId = (today === 1) ? 'WELCOME_MONDAY' : 'WELCOME_OTHER_DAY';
   const welcomeMsg = await getMessage(messageId);
@@ -221,7 +251,7 @@ async function sendWelcomeMessage(replyToken, userId) {
     const status = (today === 1) ? 'waiting_theme' : 'waiting_monday';
     await updateUserStatus(userId, status);
   } else {
-    await client.replyMessage(replyToken, { type: 'text', text: '你好！歡迎來到「隙音」。' });
+    await replyWithText(replyToken, 'WELCOME_FALLBACK');
   }
 }
 
@@ -264,6 +294,10 @@ async function saveUserTheme(userId, theme) {
 
 async function getMessage(messageId) {
   const messageSheet = doc.sheetsByTitle['Messages'];
+  if (!messageSheet) {
+    console.error("Sheet 'Messages' not found.");
+    return null;
+  }
   const rows = await messageSheet.getRows();
   const row = rows.find(r => r.get('MessageID') === messageId && (r.get('Active') === 'TRUE' || r.get('Active') === true));
   if (row) {
@@ -272,6 +306,7 @@ async function getMessage(messageId) {
       buttons: row.get('Buttons') ? JSON.parse(row.get('Buttons')) : null
     };
   }
+  console.warn(`Message with ID "${messageId}" not found in sheet.`);
   return null;
 }
 
@@ -421,6 +456,24 @@ async function sendSundayReview() {
   }
 }
 
+async function sendMonthlyReview() {
+  const userSheet = doc.sheetsByTitle['Users'];
+  const allUsers = await userSheet.getRows();
+
+  for (const userRow of allUsers) {
+    const userId = userRow.get('userId');
+    const hasEnoughData = await hasEnoughMonthlyData(userId);
+    
+    if (hasEnoughData) {
+      console.log(`Generating monthly insight for user ${userId}`);
+      const insightText = await generateMonthlyAiInsight(userId);
+      await client.pushMessage(userId, { type: 'text', text: insightText });
+    } else {
+      console.log(`Skipping monthly insight for user ${userId}, not enough data.`);
+    }
+  }
+}
+
 // --- 7. 輔助工具函式 ---
 
 async function checkYesterdayAnswer(userId) {
@@ -447,6 +500,22 @@ async function checkYesterdayAnswer(userId) {
   return false;
 }
 
+async function hasEnoughMonthlyData(userId) {
+  const answerSheet = doc.sheetsByTitle['Answers'];
+  const allAnswers = await answerSheet.getRows();
+  const currentMonth = new Date().getMonth();
+
+  const monthlyAnswers = allAnswers.filter(row => {
+    if (row.get('userId') !== userId) return false;
+    const answerDate = new Date(row.get('timestamp'));
+    return answerDate.getMonth() === currentMonth;
+  });
+
+  if (monthlyAnswers.length === 0) return false;
+  const uniqueWeeks = new Set(monthlyAnswers.map(row => row.get('week')));
+  return uniqueWeeks.size > 1;
+}
+
 async function getWeeklyAnswerRows(userId) {
   const userSheet = doc.sheetsByTitle['Users'];
   const answerSheet = doc.sheetsByTitle['Answers'];
@@ -461,7 +530,9 @@ async function getWeeklyAnswerRows(userId) {
 async function getWeeklyRecords(userId) {
   const weeklyAnswers = await getWeeklyAnswerRows(userId);
   if (weeklyAnswers.length === 0) {
-    return '看來這週你沒有留下任何紀錄喔！沒關係，下週我們再一起努力。';
+    const msg = await getMessage('NO_WEEKLY_RECORDS');
+    const fallbackMsg = await getMessage('GENERIC_ERROR');
+    return msg ? msg.message : (fallbackMsg ? fallbackMsg.message : "看來這週你沒有留下任何紀錄喔！");
   }
   
   const responseDays = new Set(weeklyAnswers.map(row => row.get('day'))).size;
@@ -475,9 +546,12 @@ async function getWeeklyRecords(userId) {
     formattedRecords += `答：${row.get('answer')}\n\n`;
   });
   const recordHeader = await getMessage('SUNDAY_SHOW_RECORD');
-  let headerText = '這週的紀錄：\n\n';
+  let headerText = '';
   if (recordHeader) {
     headerText = recordHeader.message.replace('X', responseDays) + '\n\n---\n\n';
+  } else {
+    const fallbackHeader = await getMessage('RECORDS_HEADER_FALLBACK');
+    headerText = fallbackHeader ? fallbackHeader.message + '\n\n' : '這週的紀錄：\n\n';
   }
   return headerText + formattedRecords.trim();
 }
@@ -485,7 +559,9 @@ async function getWeeklyRecords(userId) {
 async function generateAiInsight(userId) {
   const weeklyAnswers = await getWeeklyAnswerRows(userId);
   if (weeklyAnswers.length === 0) {
-    return '看來你這週沒有留下紀錄，AI 也沒有材料可以分析喔！';
+    const msg = await getMessage('NO_WEEKLY_RECORDS');
+    const fallbackMsg = await getMessage('GENERIC_ERROR');
+    return msg ? msg.message : (fallbackMsg ? fallbackMsg.message : "AI 沒有材料可以分析喔！");
   }
   const theme = weeklyAnswers[0].get('theme');
   let promptText = `這是我這週關於「${THEME_MAP[theme] || theme}」主題的紀錄：\n\n`;
@@ -493,7 +569,9 @@ async function generateAiInsight(userId) {
     promptText += `問題：${row.get('question')}\n`;
     promptText += `我的回答：${row.get('answer')}\n---\n`;
   });
-  const systemPrompt = `你是一個溫暖、有洞察力的夥伴，名叫「隙音」。你的任務是總結使用者一週的紀錄，以第二人稱「你」來和使用者對話。請從紀錄中找出重複出現的主題或情緒，給予溫柔的鼓勵和觀察，但不要給予指令或建議。風格要簡潔、真誠、像朋友一樣。`;
+
+  const systemPromptMsg = await getMessage('WEEKLY_AI_PROMPT');
+  const systemPrompt = systemPromptMsg ? systemPromptMsg.message : "你是一個溫暖的夥伴，請總結使用者的紀錄。";
   
   try {
     const completion = await openai.chat.completions.create({
@@ -513,7 +591,58 @@ async function generateAiInsight(userId) {
     return finalText;
   } catch (error) {
     console.error("Error calling OpenAI API:", error);
-    return "抱歉，AI 總結功能暫時出了點問題，請稍後再試。";
+    const msg = await getMessage('AI_ERROR_WEEKLY');
+    const fallbackMsg = await getMessage('GENERIC_ERROR');
+    return msg ? msg.message : (fallbackMsg ? fallbackMsg.message : "抱歉，AI 總結功能暫時出了點問題。");
+  }
+}
+
+async function generateMonthlyAiInsight(userId) {
+  const answerSheet = doc.sheetsByTitle['Answers'];
+  const allAnswers = await answerSheet.getRows();
+  const currentMonth = new Date().getMonth();
+
+  const monthlyAnswers = allAnswers.filter(row => {
+    if (row.get('userId') !== userId) return false;
+    const answerDate = new Date(row.get('timestamp'));
+    return answerDate.getMonth() === currentMonth;
+  });
+
+  if (monthlyAnswers.length === 0) {
+    const msg = await getMessage('NO_MONTHLY_RECORDS');
+    const fallbackMsg = await getMessage('GENERIC_ERROR');
+    return msg ? msg.message : (fallbackMsg ? fallbackMsg.message : "這個月沒有紀錄可以分析。");
+  }
+
+  let promptText = '這是我這個月的紀錄，請幫我總結：\n\n';
+  const weeklyData = {};
+  monthlyAnswers.forEach(row => {
+    const week = row.get('week');
+    if (!weeklyData[week]) {
+      weeklyData[week] = `--- ${week} ---\n`;
+    }
+    weeklyData[week] += `問題：${row.get('question')}\n`;
+    weeklyData[week] += `我的回答：${row.get('answer')}\n`;
+  });
+  promptText += Object.values(weeklyData).join('\n');
+
+  const systemPromptMsg = await getMessage('MONTHLY_AI_PROMPT');
+  const systemPrompt = systemPromptMsg ? systemPromptMsg.message : "你是一個溫暖的夥伴，請總結使用者的紀錄。";
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { "role": "system", "content": systemPrompt },
+        { "role": "user", "content": promptText }
+      ],
+    });
+    return completion.choices[0].message.content;
+  } catch (error) {
+    console.error("Error calling OpenAI API for monthly insight:", error);
+    const msg = await getMessage('AI_ERROR_MONTHLY');
+    const fallbackMsg = await getMessage('GENERIC_ERROR');
+    return msg ? msg.message : (fallbackMsg ? fallbackMsg.message : "抱歉，月份 AI 總結功能暫時出了點問題。");
   }
 }
 
