@@ -140,6 +140,7 @@ async function handlePostback(event) {
   const userId = event.source.userId;
   const data = event.postback.data;
   const replyToken = event.replyToken;
+  
   const params = {};
   data.split('&').forEach(pair => { const [key, value] = pair.split('='); params[key] = decodeURIComponent(value); });
 
@@ -170,13 +171,13 @@ async function handlePostback(event) {
     const laterMsg = await getMessage('LATER');
     await client.replyMessage(replyToken, { type: 'text', text: laterMsg ? laterMsg.message : '好的。當你準備好，隨時可以回來。' });
     await updateUserStatus(userId, 'waiting_monday');
-  } else if (params.action === 'show_record') {
-    await client.replyMessage(replyToken, { type: 'text', text: '好的，正在為您整理本週紀錄... (此功能開發中)' });
+  } else if (params.action === 'show_record') { // 👈 [修改] 這裡不再是佔位，而是真正執行功能
+    const recordsText = await getWeeklyRecords(userId);
+    await client.replyMessage(replyToken, { type: 'text', text: recordsText });
   } else if (params.action === 'get_insight') {
     await client.replyMessage(replyToken, { type: 'text', text: '好的，正在為您產生 AI 總結... (此功能開發中)' });
   }
 }
-
 async function handleThemeSelection(replyToken, userId, theme) {
   await saveUserTheme(userId, theme);
   const messageId = 'CONFIRM_' + theme;
@@ -407,6 +408,48 @@ async function checkYesterdayAnswer(userId) {
   }
   return false;
 }
+// --- 7. 輔助工具函式 ---
+
+async function getWeeklyRecords(userId) {
+  // 取得使用者和答案的工作表
+  const userSheet = doc.sheetsByTitle['Users'];
+  const answerSheet = doc.sheetsByTitle['Answers'];
+
+  // 找到目前使用者的資料，以取得本週的週次
+  const users = await userSheet.getRows();
+  const user = users.find(row => row.get('userId') === userId);
+  if (!user) {
+    return '抱歉，找不到您的使用者資料。';
+  }
+  const currentWeek = user.get('currentWeek');
+
+  // 取得本週的所有回答
+  const answers = await answerSheet.getRows();
+  const weeklyAnswers = answers.filter(row => row.get('userId') === userId && row.get('week') === currentWeek);
+
+  // 如果本週沒有回答
+  if (weeklyAnswers.length === 0) {
+    return '看來這週你沒有留下任何紀錄喔！沒關係，下週我們再一起努力。';
+  }
+
+  // 格式化回答
+  const dayMap = { 'TUE': '週二', 'WED': '週三', 'THU': '週四', 'FRI': '週五', 'SAT': '週六' };
+  let formattedRecords = '';
+  weeklyAnswers.forEach(row => {
+    const day = dayMap[row.get('day')] || row.get('day');
+    formattedRecords += `【${day}】\n`;
+    formattedRecords += `問：${row.get('question')}\n`;
+    formattedRecords += `答：${row.get('answer')}\n\n`;
+  });
+
+  // 取得回顧訊息的標題
+  const recordHeader = await getMessage('SUNDAY_SHOW_RECORD');
+  const headerText = recordHeader ? recordHeader.message + '\n\n---\n\n' : '這週的紀錄：\n\n';
+
+  return headerText + formattedRecords.trim();
+}
+
+// ... 你原本的其他輔助函式 ...
 
 async function countWeeklyResponses(userId, week) {
   const answerSheet = doc.sheetsByTitle['Answers'];
