@@ -1,12 +1,12 @@
 // ========================================
-// 隙音 LINE Bot - Render (AI 功能完整版)
+// 隙音 LINE Bot - Render (V2 - 邏輯修正完整版)
 // ========================================
 const express = require('express');
 const line = require('@line/bot-sdk');
 const cron = require('node-cron');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 const { JWT } = require('google-auth-library');
-const OpenAI = require('openai'); // [新增] 引入 OpenAI 工具
+const OpenAI = require('openai');
 
 // --- 1. 初始化設定 ---
 
@@ -21,7 +21,6 @@ const serviceAccountAuth = new JWT({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// [新增] 初始化 OpenAI
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
@@ -32,22 +31,21 @@ const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
 const client = new line.Client(lineConfig);
 const app = express();
 
-// --- 2. Webhook 進入點 ---
+// --- 2. Webhook & 測試路徑 ---
 
 app.get('/', (req, res) => {
   res.status(200).send('OK');
 });
 
-// [測試用] 建立一個秘密的 GET 請求路徑，用來手動觸發週日回顧
 app.get('/test-sunday-review', async (req, res) => {
-  console.log('手動觸發週日回顧 (Manual trigger for Sunday review)');
+  console.log('手動觸發週日回顧');
   try {
     await doc.loadInfo();
-    await sendSundayReview(); // 呼叫我們想要測試的函式
-    res.status(200).send('週日回顧任務已觸發，請檢查你的 LINE 和 Render Logs。');
+    await sendSundayReview();
+    res.status(200).send('週日回顧任務已觸發');
   } catch (err) {
     console.error('手動觸發週日回顧時發生錯誤:', err);
-    res.status(500).send('觸發失敗，請檢查 Render Logs 中的錯誤訊息。');
+    res.status(500).send('觸發失敗，請檢查 Logs');
   }
 });
 
@@ -111,7 +109,7 @@ cron.schedule('0 20 * * 0', async () => {
 }, { timezone: "Asia/Taipei" });
 
 
-// --- 4. 核心程式碼邏輯 ---
+// --- 4. 核心互動邏輯 ---
 
 const THEME_MAP = { 'SELF': '自己', 'CREATION': '創作', 'FAMILY': '家庭' };
 
@@ -292,23 +290,40 @@ async function getQuestion(theme, day) {
   return null;
 }
 
+async function getQuestionById(questionId) {
+  const questionSheet = doc.sheetsByTitle['Questions'];
+  const rows = await questionSheet.getRows();
+  const row = rows.find(r => r.get('QuestionID') === questionId);
+  if (row) {
+    return { questionId: row.get('QuestionID'), question: row.get('Question') };
+  }
+  return null;
+}
+
 async function saveUserAnswer(userId, answer) {
   const userSheet = doc.sheetsByTitle['Users'];
   const user = await getOrCreateUser(userId, userSheet);
+
+  if (!user.lastQuestionId) {
+    console.log(`User ${userId} answered without a pending question. Ignoring.`);
+    return;
+  }
+
+  const question = await getQuestionById(user.lastQuestionId);
   const dayOfWeek = getCurrentDayString();
-  const question = await getQuestion(user.currentTheme, dayOfWeek);
   
   const answerSheet = doc.sheetsByTitle['Answers'];
   await answerSheet.addRow({
     AnswerID: 'A' + new Date().getTime(), userId: userId, week: user.currentWeek,
-    theme: user.currentTheme, day: dayOfWeek, questionId: question ? question.questionId : '',
-    question: question ? question.question : '', answer: answer,
+    theme: user.currentTheme, day: dayOfWeek, questionId: question ? question.questionId : 'N/A',
+    question: question ? question.question : 'N/A', answer: answer,
     skipped: false, timestamp: new Date()
   });
 
   const userRow = (await userSheet.getRows()).find(row => row.get('userId') === userId);
   if(userRow){
     userRow.set('noResponseWeek', 0);
+    userRow.set('lastQuestionId', '');
     await userRow.save();
   }
 }
@@ -367,6 +382,7 @@ async function sendDailyQuestion() {
         
         await client.pushMessage(userId, { type: 'text', text: messageText });
         row.set('status', 'waiting_answer');
+        row.set('lastQuestionId', question.questionId);
         row.set('lastActive', new Date());
         await row.save();
       } else {
@@ -447,6 +463,9 @@ async function getWeeklyRecords(userId) {
   if (weeklyAnswers.length === 0) {
     return '看來這週你沒有留下任何紀錄喔！沒關係，下週我們再一起努力。';
   }
+  
+  const responseDays = new Set(weeklyAnswers.map(row => row.get('day'))).size;
+
   const dayMap = { 'TUE': '週二', 'WED': '週三', 'THU': '週四', 'FRI': '週五', 'SAT': '週六' };
   let formattedRecords = '';
   weeklyAnswers.forEach(row => {
@@ -456,7 +475,10 @@ async function getWeeklyRecords(userId) {
     formattedRecords += `答：${row.get('answer')}\n\n`;
   });
   const recordHeader = await getMessage('SUNDAY_SHOW_RECORD');
-  const headerText = recordHeader ? recordHeader.message + '\n\n---\n\n' : '這週的紀錄：\n\n';
+  let headerText = '這週的紀錄：\n\n';
+  if (recordHeader) {
+    headerText = recordHeader.message.replace('X', responseDays) + '\n\n---\n\n';
+  }
   return headerText + formattedRecords.trim();
 }
 
