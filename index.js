@@ -1,11 +1,12 @@
 // ========================================
-// 隙音 LINE Bot - Render 最終同步版
+// 隙音 LINE Bot - Render (AI 功能完整版)
 // ========================================
 const express = require('express');
 const line = require('@line/bot-sdk');
 const cron = require('node-cron');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 const { JWT } = require('google-auth-library');
+const OpenAI = require('openai'); // [新增] 引入 OpenAI 工具
 
 // --- 1. 初始化設定 ---
 
@@ -20,7 +21,12 @@ const serviceAccountAuth = new JWT({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-const SPREADSHEET_ID = '1TMyXHW2BaYJ3l8p1EdCQfb9Vhx_fJUrAZAEVOSBiom0'; // ⚠️ 請務必確認這裡是你正確的 Google Sheet ID
+// [新增] 初始化 OpenAI
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+const SPREADSHEET_ID = '1TMyXHW2BaYJ3l8p1EdCQfb9Vhx_fJUrAZAEVOSBiom0'; // ⚠️ 請確認這是你正確的 Google Sheet ID
 const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
 
 const client = new line.Client(lineConfig);
@@ -30,6 +36,19 @@ const app = express();
 
 app.get('/', (req, res) => {
   res.status(200).send('OK');
+});
+
+// [測試用] 建立一個秘密的 GET 請求路徑，用來手動觸發週日回顧
+app.get('/test-sunday-review', async (req, res) => {
+  console.log('手動觸發週日回顧 (Manual trigger for Sunday review)');
+  try {
+    await doc.loadInfo();
+    await sendSundayReview(); // 呼叫我們想要測試的函式
+    res.status(200).send('週日回顧任務已觸發，請檢查你的 LINE 和 Render Logs。');
+  } catch (err) {
+    console.error('手動觸發週日回顧時發生錯誤:', err);
+    res.status(500).send('觸發失敗，請檢查 Render Logs 中的錯誤訊息。');
+  }
 });
 
 app.post('/webhook', line.middleware(lineConfig), (req, res) => {
@@ -91,6 +110,7 @@ cron.schedule('0 20 * * 0', async () => {
   }
 }, { timezone: "Asia/Taipei" });
 
+
 // --- 4. 核心程式碼邏輯 ---
 
 const THEME_MAP = { 'SELF': '自己', 'CREATION': '創作', 'FAMILY': '家庭' };
@@ -118,7 +138,7 @@ async function handleTextMessage(event) {
   let user = await getOrCreateUser(userId, userSheet);
 
   if (!user.status || user.status === 'new' || user.status === 'idle' || user.status === 'waiting_monday') {
-    await sendWelcomeMessage(replyToken, userId, userSheet);
+    await sendWelcomeMessage(replyToken, userId);
   } else if (user.status === 'waiting_theme') {
     const msg = await getMessage('PROMPT_THEME_CHOICE');
     await client.replyMessage(replyToken, { type: 'text', text: msg ? msg.message : '請點選上方按鈕選擇你想探索的主題 😊' });
@@ -140,7 +160,6 @@ async function handlePostback(event) {
   const userId = event.source.userId;
   const data = event.postback.data;
   const replyToken = event.replyToken;
-  
   const params = {};
   data.split('&').forEach(pair => { const [key, value] = pair.split('='); params[key] = decodeURIComponent(value); });
 
@@ -171,13 +190,16 @@ async function handlePostback(event) {
     const laterMsg = await getMessage('LATER');
     await client.replyMessage(replyToken, { type: 'text', text: laterMsg ? laterMsg.message : '好的。當你準備好，隨時可以回來。' });
     await updateUserStatus(userId, 'waiting_monday');
-  } else if (params.action === 'show_record') { // 👈 [修改] 這裡不再是佔位，而是真正執行功能
+  } else if (params.action === 'show_record') {
     const recordsText = await getWeeklyRecords(userId);
     await client.replyMessage(replyToken, { type: 'text', text: recordsText });
   } else if (params.action === 'get_insight') {
-    await client.replyMessage(replyToken, { type: 'text', text: '好的，正在為您產生 AI 總結... (此功能開發中)' });
+    await client.replyMessage(replyToken, { type: 'text', text: '好的，正在為您產生 AI 總結，請稍候幾秒鐘...' });
+    const insightText = await generateAiInsight(userId);
+    await client.pushMessage(userId, { type: 'text', text: insightText });
   }
 }
+
 async function handleThemeSelection(replyToken, userId, theme) {
   await saveUserTheme(userId, theme);
   const messageId = 'CONFIRM_' + theme;
@@ -294,21 +316,21 @@ async function saveUserAnswer(userId, answer) {
 // --- 6. 定時任務完整邏輯 ---
 
 async function sendMondayThemeSelection() {
-    const userSheet = doc.sheetsByTitle['Users'];
-    const rows = await userSheet.getRows();
-    const mondayMsg = await getMessage('MONDAY_WEEK1');
-    if (!mondayMsg) { console.error("Message 'MONDAY_WEEK1' not found."); return; }
+  const userSheet = doc.sheetsByTitle['Users'];
+  const rows = await userSheet.getRows();
+  const mondayMsg = await getMessage('MONDAY_WEEK1');
+  if (!mondayMsg) { console.error("Message 'MONDAY_WEEK1' not found."); return; }
 
-    for (const row of rows) {
-        if (row.get('status') === 'active' || row.get('status') === 'waiting_monday') {
-            const userId = row.get('userId');
-            const message = createMessageObject(mondayMsg.message, mondayMsg.buttons);
-            await client.pushMessage(userId, message);
-            row.set('status', 'waiting_theme');
-            row.set('lastActive', new Date());
-            await row.save();
-        }
+  for (const row of rows) {
+    if (row.get('status') === 'active' || row.get('status') === 'waiting_monday') {
+      const userId = row.get('userId');
+      const message = createMessageObject(mondayMsg.message, mondayMsg.buttons);
+      await client.pushMessage(userId, message);
+      row.set('status', 'waiting_theme');
+      row.set('lastActive', new Date());
+      await row.save();
     }
+  }
 }
 
 async function sendDailyQuestion() {
@@ -408,31 +430,23 @@ async function checkYesterdayAnswer(userId) {
   }
   return false;
 }
-// --- 7. 輔助工具函式 ---
 
-async function getWeeklyRecords(userId) {
-  // 取得使用者和答案的工作表
+async function getWeeklyAnswerRows(userId) {
   const userSheet = doc.sheetsByTitle['Users'];
   const answerSheet = doc.sheetsByTitle['Answers'];
-
-  // 找到目前使用者的資料，以取得本週的週次
   const users = await userSheet.getRows();
   const user = users.find(row => row.get('userId') === userId);
-  if (!user) {
-    return '抱歉，找不到您的使用者資料。';
-  }
+  if (!user) return [];
   const currentWeek = user.get('currentWeek');
-
-  // 取得本週的所有回答
   const answers = await answerSheet.getRows();
-  const weeklyAnswers = answers.filter(row => row.get('userId') === userId && row.get('week') === currentWeek);
+  return answers.filter(row => row.get('userId') === userId && row.get('week') === currentWeek);
+}
 
-  // 如果本週沒有回答
+async function getWeeklyRecords(userId) {
+  const weeklyAnswers = await getWeeklyAnswerRows(userId);
   if (weeklyAnswers.length === 0) {
     return '看來這週你沒有留下任何紀錄喔！沒關係，下週我們再一起努力。';
   }
-
-  // 格式化回答
   const dayMap = { 'TUE': '週二', 'WED': '週三', 'THU': '週四', 'FRI': '週五', 'SAT': '週六' };
   let formattedRecords = '';
   weeklyAnswers.forEach(row => {
@@ -441,15 +455,45 @@ async function getWeeklyRecords(userId) {
     formattedRecords += `問：${row.get('question')}\n`;
     formattedRecords += `答：${row.get('answer')}\n\n`;
   });
-
-  // 取得回顧訊息的標題
   const recordHeader = await getMessage('SUNDAY_SHOW_RECORD');
   const headerText = recordHeader ? recordHeader.message + '\n\n---\n\n' : '這週的紀錄：\n\n';
-
   return headerText + formattedRecords.trim();
 }
 
-// ... 你原本的其他輔助函式 ...
+async function generateAiInsight(userId) {
+  const weeklyAnswers = await getWeeklyAnswerRows(userId);
+  if (weeklyAnswers.length === 0) {
+    return '看來你這週沒有留下紀錄，AI 也沒有材料可以分析喔！';
+  }
+  const theme = weeklyAnswers[0].get('theme');
+  let promptText = `這是我這週關於「${THEME_MAP[theme] || theme}」主題的紀錄：\n\n`;
+  weeklyAnswers.forEach(row => {
+    promptText += `問題：${row.get('question')}\n`;
+    promptText += `我的回答：${row.get('answer')}\n---\n`;
+  });
+  const systemPrompt = `你是一個溫暖、有洞察力的夥伴，名叫「隙音」。你的任務是總結使用者一週的紀錄，以第二人稱「你」來和使用者對話。請從紀錄中找出重複出現的主題或情緒，給予溫柔的鼓勵和觀察，但不要給予指令或建議。風格要簡潔、真誠、像朋友一樣。`;
+  
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { "role": "system", "content": systemPrompt },
+        { "role": "user", "content": promptText }
+      ],
+    });
+    const aiResponse = completion.choices[0].message.content;
+    const prefixMsg = await getMessage('SUNDAY_AI_INSIGHT_PREFIX');
+    const suffixMsg = await getMessage('SUNDAY_AI_INSIGHT_SUFFIX');
+    let finalText = '';
+    if (prefixMsg) finalText += prefixMsg.message + '\n\n';
+    finalText += aiResponse;
+    if (suffixMsg) finalText += '\n\n' + suffixMsg.message;
+    return finalText;
+  } catch (error) {
+    console.error("Error calling OpenAI API:", error);
+    return "抱歉，AI 總結功能暫時出了點問題，請稍後再試。";
+  }
+}
 
 async function countWeeklyResponses(userId, week) {
   const answerSheet = doc.sheetsByTitle['Answers'];
