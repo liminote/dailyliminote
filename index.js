@@ -1,5 +1,5 @@
 // ========================================
-// 隙音 LINE Bot - Render (V2.6 - 終極全文案外部化 最終版)
+// 隙音 LINE Bot - Render (V3.0 - 新互動流程 最終完整版)
 // ========================================
 const express = require('express');
 const line = require('@line/bot-sdk');
@@ -37,14 +37,14 @@ app.get('/', (req, res) => {
   res.status(200).send('OK');
 });
 
-app.get('/test-sunday-review', async (req, res) => {
-  console.log('手動觸發週日回顧');
+app.get('/test-saturday-review', async (req, res) => {
+  console.log('手動觸發週六回顧');
   try {
     await doc.loadInfo();
-    await sendSundayReview();
-    res.status(200).send('週日回顧任務已觸發');
+    await sendSaturdayReview();
+    res.status(200).send('週六回顧任務已觸發');
   } catch (err) {
-    console.error('手動觸發週日回顧時發生錯誤:', err);
+    console.error('手動觸發週六回顧時發生錯誤:', err);
     res.status(500).send('觸發失敗，請檢查 Logs');
   }
 });
@@ -88,7 +88,7 @@ cron.schedule('0 9 * * 1', async () => {
   }
 }, { timezone: "Asia/Taipei" });
 
-cron.schedule('0 9 * * 2-6', async () => {
+cron.schedule('0 9 * * 2-5', async () => {
   console.log('Running: sendDailyQuestion @ 9:00 AM Taipei Time');
   try {
     await doc.loadInfo();
@@ -98,13 +98,13 @@ cron.schedule('0 9 * * 2-6', async () => {
   }
 }, { timezone: "Asia/Taipei" });
 
-cron.schedule('0 20 * * 0', async () => {
-  console.log('Running: sendSundayReview @ 8:00 PM Taipei Time');
+cron.schedule('0 20 * * 6', async () => {
+  console.log('Running: sendSaturdayReview @ 8:00 PM Taipei Time');
    try {
     await doc.loadInfo();
-    await sendSundayReview();
+    await sendSaturdayReview();
   } catch (err) {
-    console.error('Error in sendSundayReview cron job:', err);
+    console.error('Error in sendSaturdayReview cron job:', err);
   }
 }, { timezone: "Asia/Taipei" });
 
@@ -220,7 +220,7 @@ async function handlePostback(event) {
       break;
 
     case 'get_insight':
-      await client.replyMessage(replyToken, { type: 'text', text: '好的，正在為您產生 AI 總結，請稍候幾秒鐘...' }); // This is system feedback, not user-facing content, so it's ok to be here.
+      await client.replyMessage(replyToken, { type: 'text', text: '好的，正在為您產生 AI 總結，請稍候幾秒鐘...' });
       const insightText = await generateAiInsight(userId);
       await client.pushMessage(userId, { type: 'text', text: insightText });
       break;
@@ -239,6 +239,9 @@ async function handleThemeSelection(replyToken, userId, theme) {
     const text = fallbackMsg ? fallbackMsg.message.replace('【主題】', themeChinese) : `收到。\n\n這週，我們一起關注「${themeChinese}」。`;
     await client.replyMessage(replyToken, { type: 'text', text: text });
   }
+  setTimeout(async () => {
+    await sendDailyQuestionForUser(userId);
+  }, 1000);
 }
 
 async function sendWelcomeMessage(replyToken, userId) {
@@ -383,15 +386,16 @@ async function sendMondayThemeSelection() {
   }
 }
 
-async function sendDailyQuestion() {
-  const dayString = getCurrentDayString();
-  const userSheet = doc.sheetsByTitle['Users'];
-  const rows = await userSheet.getRows();
-  
-  for (const row of rows) {
+async function sendDailyQuestionForUser(userId) {
+    const userSheet = doc.sheetsByTitle['Users'];
+    const rows = await userSheet.getRows();
+    const row = rows.find(r => r.get('userId') === userId);
+    
+    if (!row) return;
+
+    const dayString = getCurrentDayString();
     const status = row.get('status');
     const theme = row.get('currentTheme');
-    const userId = row.get('userId');
 
     if (status === 'active' && theme) {
       const question = await getQuestion(theme, dayString);
@@ -399,13 +403,13 @@ async function sendDailyQuestion() {
         let messageText = '';
         const themeChinese = THEME_MAP[theme] || theme;
         
-        const yesterdayAnswered = await checkYesterdayAnswer(userId);
         const today = new Date().getDay();
-        if (!yesterdayAnswered && today > 2) { 
-          const skipMsg = await getMessage('SKIP_YESTERDAY');
-          if(skipMsg) {
-            messageText += skipMsg.message + '\n\n';
-          }
+        if (today !== 1) { // 週一不檢查昨天
+            const yesterdayAnswered = await checkYesterdayAnswer(userId);
+            if (!yesterdayAnswered) { 
+              const skipMsg = await getMessage('SKIP_YESTERDAY');
+              if(skipMsg) messageText += skipMsg.message + '\n\n';
+            }
         }
         
         const dailyMsg = await getMessage('DAILY_QUESTION');
@@ -424,10 +428,17 @@ async function sendDailyQuestion() {
         console.log(`找不到問題: 主題=${theme}, 天=${dayString}, 未發送給用戶 ${userId}`);
       }
     }
+}
+
+async function sendDailyQuestion() {
+  const userSheet = doc.sheetsByTitle['Users'];
+  const rows = await userSheet.getRows();
+  for (const row of rows) {
+    await sendDailyQuestionForUser(row.get('userId'));
   }
 }
 
-async function sendSundayReview() {
+async function sendSaturdayReview() {
   const userSheet = doc.sheetsByTitle['Users'];
   const rows = await userSheet.getRows();
   
@@ -440,13 +451,13 @@ async function sendSundayReview() {
 
     if ((status === 'active' || status === 'waiting_answer') && theme) {
       const responseDays = await countWeeklyResponses(userId, currentWeek);
-      const messageId = responseDays === 0 ? 'SUNDAY_NO_RESPONSE' : 'SUNDAY_START';
-      const sundayMsg = await getMessage(messageId);
+      const messageId = responseDays === 0 ? 'SATURDAY_NO_RESPONSE' : 'SATURDAY_START';
+      const saturdayMsg = await getMessage(messageId);
       
-      if (sundayMsg) {
+      if (saturdayMsg) {
         const themeChinese = THEME_MAP[theme] || theme;
-        let messageText = sundayMsg.message.replace('【主題】', themeChinese);
-        const message = createMessageObject(messageText, responseDays > 0 ? sundayMsg.buttons : null);
+        let messageText = saturdayMsg.message.replace('【主題】', themeChinese);
+        const message = createMessageObject(messageText, responseDays > 0 ? saturdayMsg.buttons : null);
         await client.pushMessage(userId, message);
       }
       
@@ -537,7 +548,7 @@ async function getWeeklyRecords(userId) {
   
   const responseDays = new Set(weeklyAnswers.map(row => row.get('day'))).size;
 
-  const dayMap = { 'TUE': '週二', 'WED': '週三', 'THU': '週四', 'FRI': '週五', 'SAT': '週六' };
+  const dayMap = { 'MON': '週一', 'TUE': '週二', 'WED': '週三', 'THU': '週四', 'FRI': '週五' };
   let formattedRecords = '';
   weeklyAnswers.forEach(row => {
     const day = dayMap[row.get('day')] || row.get('day');
@@ -545,7 +556,7 @@ async function getWeeklyRecords(userId) {
     formattedRecords += `問：${row.get('question')}\n`;
     formattedRecords += `答：${row.get('answer')}\n\n`;
   });
-  const recordHeader = await getMessage('SUNDAY_SHOW_RECORD');
+  const recordHeader = await getMessage('SATURDAY_SHOW_RECORD');
   let headerText = '';
   if (recordHeader) {
     headerText = recordHeader.message.replace('X', responseDays) + '\n\n---\n\n';
@@ -561,7 +572,7 @@ async function generateAiInsight(userId) {
   if (weeklyAnswers.length === 0) {
     const msg = await getMessage('NO_WEEKLY_RECORDS');
     const fallbackMsg = await getMessage('GENERIC_ERROR');
-    return msg ? msg.message : (fallbackMsg ? fallbackMsg.message : "AI 沒有材料可以分析喔！");
+    return msg ? msg.message : "AI 沒有材料可以分析喔！";
   }
   const theme = weeklyAnswers[0].get('theme');
   let promptText = `這是我這週關於「${THEME_MAP[theme] || theme}」主題的紀錄：\n\n`;
@@ -593,7 +604,7 @@ async function generateAiInsight(userId) {
     console.error("Error calling OpenAI API:", error);
     const msg = await getMessage('AI_ERROR_WEEKLY');
     const fallbackMsg = await getMessage('GENERIC_ERROR');
-    return msg ? msg.message : (fallbackMsg ? fallbackMsg.message : "抱歉，AI 總結功能暫時出了點問題。");
+    return msg ? msg.message : "抱歉，AI 總結功能暫時出了點問題。";
   }
 }
 
@@ -611,7 +622,7 @@ async function generateMonthlyAiInsight(userId) {
   if (monthlyAnswers.length === 0) {
     const msg = await getMessage('NO_MONTHLY_RECORDS');
     const fallbackMsg = await getMessage('GENERIC_ERROR');
-    return msg ? msg.message : (fallbackMsg ? fallbackMsg.message : "這個月沒有紀錄可以分析。");
+    return msg ? msg.message : "這個月沒有紀錄可以分析。";
   }
 
   let promptText = '這是我這個月的紀錄，請幫我總結：\n\n';
@@ -642,7 +653,7 @@ async function generateMonthlyAiInsight(userId) {
     console.error("Error calling OpenAI API for monthly insight:", error);
     const msg = await getMessage('AI_ERROR_MONTHLY');
     const fallbackMsg = await getMessage('GENERIC_ERROR');
-    return msg ? msg.message : (fallbackMsg ? fallbackMsg.message : "抱歉，月份 AI 總結功能暫時出了點問題。");
+    return msg ? msg.message : "抱歉，月份 AI 總結功能暫時出了點問題。";
   }
 }
 
@@ -679,7 +690,6 @@ function getCurrentDayString() {
 }
 
 // --- 8. 伺服器啟動 ---
-
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`listening on ${port}`);
