@@ -375,14 +375,25 @@ async function sendMondayThemeSelection() {
   if (!mondayMsg) { console.error("Message 'MONDAY_WEEK1' not found."); return; }
 
   for (const row of rows) {
-    if (row.get('status') === 'active' || row.get('status') === 'waiting_monday') {
+    // [邏輯修正] 只針對 waiting_monday 的使用者，或本週尚未設定主題的 active 使用者
+    const currentStatus = row.get('status');
+    const currentWeek = row.get('currentWeek');
+    const thisWeek = getCurrentWeekString(); // 取得當前的週次字串
+
+    // 只有當使用者狀態是 waiting_monday，
+    // 或者使用者是 active 但他的 currentWeek 不是本週 (代表他是上週殘留的 active)，
+    // 才需要發送週一主題選擇
+    if (currentStatus === 'waiting_monday' || (currentStatus === 'active' && currentWeek !== thisWeek)) {
       const userId = row.get('userId');
       const message = createMessageObject(mondayMsg.message, mondayMsg.buttons);
       await client.pushMessage(userId, message);
-      row.set('status', 'waiting_theme');
+      row.set('status', 'waiting_theme'); // 設定為等待選擇主題
       row.set('lastActive', new Date());
+      // 注意：這裡不再主動清除 currentTheme 或 currentWeek，讓使用者重新選擇時覆蓋即可
       await row.save();
     }
+    // 如果使用者已經是 active 且 currentWeek 是本週，代表他可能週一當天加入並選了主題，
+    // 或者他是從上週順利過渡到本週的活躍用戶，這種情況下就不需要再打擾他選主題。
   }
 }
 
