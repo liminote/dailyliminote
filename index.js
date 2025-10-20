@@ -153,24 +153,26 @@ function createMessageObject(text, buttons) {
 }
 
 async function handleTextMessage(event) {
-  const userId = event.source.userId;
-  const replyToken = event.replyToken;
-  const userSheet = doc.sheetsByTitle['Users'];
-  let user = await getOrCreateUser(userId, userSheet);
+  const userId = event.source.userId;
+  const replyToken = event.replyToken;
+  const userSheet = doc.sheetsByTitle['Users'];
+  let user = await getOrCreateUser(userId, userSheet);
 
-  if (!user.status || user.status === 'new' || user.status === 'idle' || user.status === 'waiting_monday') {
-    await sendWelcomeMessage(replyToken, userId);
-  } else if (user.status === 'waiting_theme') {
-    await replyWithText(replyToken, 'PROMPT_THEME_CHOICE');
-  } else if (user.status === 'waiting_answer') {
-    await saveUserAnswer(userId, event.message.text);
-    await replyWithText(replyToken, 'HEARD');
-    await updateUserStatus(userId, 'active');
-  } else if (user.status === 'active') {
-    await replyWithText(replyToken, 'ACK_ACTIVE');
-  } else {
-    await replyWithText(replyToken, 'FALLBACK_GENERAL');
-  }
+  if (!user.status || user.status === 'new' || user.status === 'idle' || user.status === 'waiting_monday') {
+    await sendWelcomeMessage(replyToken, userId);
+  } else if (user.status === 'waiting_theme') {
+    await replyWithText(replyToken, 'PROMPT_THEME_CHOICE');
+  } else if (user.status === 'waiting_answer') {
+    // 這是正確的邏輯區塊
+    await saveUserAnswer(userId, event.message.text);
+    await replyWithText(replyToken, 'HEARD');
+    await updateUserStatus(userId, 'active');
+    // ⚠️ 請確保底下沒有 "await sendDailyQuestionForUser(userId);" 這一行！
+  } else if (user.status === 'active') {
+    await replyWithText(replyToken, 'ACK_ACTIVE');
+  } else {
+    await replyWithText(replyToken, 'FALLBACK_GENERAL');
+  }
 }
 
 async function handlePostback(event) {
