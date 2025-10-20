@@ -1,5 +1,5 @@
 // ========================================
-// 隙音 LINE Bot - Render (V3.2 - 修正週末按鈕邏輯版)
+// 隙音 LINE Bot - Render (V3.3 - 正式版)
 // ========================================
 const express = require('express');
 const line = require('@line/bot-sdk');
@@ -25,7 +25,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const SPREADSHEET_ID = '1TMyXHW2BaYJ3l8p1EdCQfb9Vhx_fJUrAZAEVOSBiom0'; // ⚠️ 請確認這是你正確的 Google Sheet ID
+const SPREADSHEET_ID = '1TMyXHW2BaYJ3l8p1EdCQfb9Vhx_fJUrAZAEVOSBiom0';
 const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
 
 const client = new line.Client(lineConfig);
@@ -34,35 +34,43 @@ const app = express();
 // --- 2. Webhook & 測試路徑 ---
 
 app.get('/', (req, res) => {
-  console.log('Root path / was hit by a GET request.');
-  res.status(200).send('OK - Service is running.');
+  // 這個路徑主要用於 Uptime Robot 保持服務喚醒
+  res.status(200).send('OK');
 });
 
-app.post('/webhook', (req, res, next) => {
-  console.log('!!! A POST request has hit /webhook. Now passing to LINE middleware...');
-  // 手動調用 LINE middleware
-  line.middleware(lineConfig)(req, res, (err) => {
-    if (err) {
-      console.error('!!! LINE Middleware Error:', err.message);
-      // 即使有錯，我們也回傳 200 OK，避免 LINE 重試
-      return res.status(200).send('Middleware Error'); 
-    }
-    console.log('!!! LINE Middleware validation successful. Passing to handleEvent...');
-    next();
-  });
-}, (req, res) => {
-  if (!req.body.events || req.body.events.length === 0) {
-    console.log('Webhook received but no events found.');
-    return res.json({});
-  }
-  Promise
-    .all(req.body.events.map(handleEvent))
-    .then((result) => res.json(result))
-    .catch((err) => {
-      console.error(err);
-      res.status(500).end();
-    });
+// 標準的 Webhook 處理器
+app.post('/webhook', line.middleware(lineConfig), (req, res) => {
+  if (!req.body.events || req.body.events.length === 0) {
+    return res.json({});
+  }
+  Promise
+    .all(req.body.events.map(handleEvent))
+    .then((result) => res.json(result))
+    .catch((err) => {
+      console.error(err);
+      res.status(500).end();
+    });
 });
+
+async function handleEvent(event) {
+  // 我們只處理文字訊息和 postback 事件
+  // 排除掉 LINE Verify Webhook 時發送的空事件
+  if (event.type !== 'message' && event.type !== 'postback') {
+    return Promise.resolve(null);
+  }
+  
+  try {
+    await doc.loadInfo();
+    if (event.type === 'message' && event.message.type === 'text') {
+      await handleTextMessage(event);
+    } else if (event.type === 'postback') {
+      await handlePostback(event);
+    }
+  } catch (err) {
+    console.error('Error in handleEvent:', err);
+  }
+  return Promise.resolve(null);
+}
 
 // --- 3. 定時任務排程 ---
 
@@ -88,7 +96,7 @@ cron.schedule('0 9 * * 2-5', async () => {
 
 cron.schedule('0 20 * * 6', async () => {
   console.log('Running: sendSaturdayReview @ 8:00 PM Taipei Time');
-   try {
+  try {
     await doc.loadInfo();
     await sendSaturdayReview();
   } catch (err) {
@@ -117,11 +125,11 @@ cron.schedule('0 22 * * *', async () => {
 const THEME_MAP = { 'SELF': '自己', 'CREATION': '創作', 'FAMILY': '家庭' };
 
 async function replyWithText(replyToken, messageId, fallbackId = 'GENERIC_ERROR') {
-    let msg = await getMessage(messageId);
-    if (!msg) {
-        msg = await getMessage(fallbackId);
-    }
-    await client.replyMessage(replyToken, { type: 'text', text: msg ? msg.message : '系統發生錯誤' });
+  let msg = await getMessage(messageId);
+  if (!msg) {
+    msg = await getMessage(fallbackId);
+  }
+  await client.replyMessage(replyToken, { type: 'text', text: msg ? msg.message : '系統發生錯誤' });
 }
 
 function createMessageObject(text, buttons) {
@@ -141,26 +149,24 @@ function createMessageObject(text, buttons) {
 }
 
 async function handleTextMessage(event) {
-  const userId = event.source.userId;
-  const replyToken = event.replyToken;
-  const userSheet = doc.sheetsByTitle['Users'];
-  let user = await getOrCreateUser(userId, userSheet);
+  const userId = event.source.userId;
+  const replyToken = event.replyToken;
+  const userSheet = doc.sheetsByTitle['Users'];
+  let user = await getOrCreateUser(userId, userSheet);
 
-  if (!user.status || user.status === 'new' || user.status === 'idle' || user.status === 'waiting_monday') {
-    await sendWelcomeMessage(replyToken, userId);
-  } else if (user.status === 'waiting_theme') {
-    await replyWithText(replyToken, 'PROMPT_THEME_CHOICE');
-  } else if (user.status === 'waiting_answer') {
-    // 這是正確的邏輯區塊
-    await saveUserAnswer(userId, event.message.text);
-    await replyWithText(replyToken, 'HEARD');
-    await updateUserStatus(userId, 'active');
-    // ⚠️ 請確保底下沒有 "await sendDailyQuestionForUser(userId);" 這一行！
-  } else if (user.status === 'active') {
-    await replyWithText(replyToken, 'ACK_ACTIVE');
-  } else {
-    await replyWithText(replyToken, 'FALLBACK_GENERAL');
-  }
+  if (!user.status || user.status === 'new' || user.status === 'idle' || user.status === 'waiting_monday') {
+    await sendWelcomeMessage(replyToken, userId);
+  } else if (user.status === 'waiting_theme') {
+    await replyWithText(replyToken, 'PROMPT_THEME_CHOICE');
+  } else if (user.status === 'waiting_answer') {
+    await saveUserAnswer(userId, event.message.text);
+    await replyWithText(replyToken, 'HEARD');
+    await updateUserStatus(userId, 'active');
+  } else if (user.status === 'active') {
+    await replyWithText(replyToken, 'ACK_ACTIVE');
+  } else {
+    await replyWithText(replyToken, 'FALLBACK_GENERAL');
+  }
 }
 
 async function handlePostback(event) {
@@ -183,7 +189,7 @@ async function handlePostback(event) {
       await client.replyMessage(replyToken, message);
       await updateUserStatus(userId, 'waiting_theme');
       break;
-    
+
     case 'ready':
       msg = await getMessage('THEME_SELECT');
       text = msg ? msg.message : (await getMessage('THEME_SELECT_FALLBACK')).message;
@@ -194,10 +200,11 @@ async function handlePostback(event) {
     case 'select_theme':
       await handleThemeSelection(replyToken, userId, params.theme);
       break;
-      
+
     case 'start_question':
+      // 使用者點擊按鈕，直接為該使用者發送問題
       await sendDailyQuestionForUser(userId);
-      // No reply needed here as it's a push message
+      // 這是一個 push message，所以不需要 replyToken
       break;
 
     case 'how_to_play':
@@ -222,10 +229,9 @@ async function handlePostback(event) {
   }
 }
 
-// [邏輯修改] 只有週一到週五才顯示「開始回答」按鈕
 async function handleThemeSelection(replyToken, userId, theme) {
   await saveUserTheme(userId, theme); // 狀態已設為 active
-  
+
   const messageId = 'CONFIRM_' + theme;
   const confirmMsg = await getMessage(messageId);
   let text;
@@ -238,13 +244,11 @@ async function handleThemeSelection(replyToken, userId, theme) {
     text = fallbackMsg ? fallbackMsg.message.replace('【主題】', themeChinese) : `收到。\n\n這週，我們一起關注「${themeChinese}」。`;
   }
 
-  // 判斷今天是否為週一到週五
   const today = new Date().getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
   let buttons = null;
   if (today >= 1 && today <= 5) { // 如果是週一到週五
-    buttons = [{"label":"開始回答今天問題","data":"action=start_question"}];
+    buttons = [{ "label": "開始回答今天問題", "data": "action=start_question" }];
   } else {
-    // 如果是週六或週日，可以考慮加上提示文字
     text += '\n\n問題將從下週一開始。';
   }
 
@@ -255,8 +259,7 @@ async function handleThemeSelection(replyToken, userId, theme) {
 
 async function sendWelcomeMessage(replyToken, userId) {
   const today = new Date().getDay();
-  // 週日加入也視為非週一
-  const messageId = (today === 1) ? 'WELCOME_MONDAY' : 'WELCOME_OTHER_DAY';
+  const messageId = (today === 1) ? 'WELCOME_MONDAY' : 'WELCOME_OTHER_DAY'; // 週日加入也視為非週一
   const welcomeMsg = await getMessage(messageId);
   if (welcomeMsg) {
     const message = createMessageObject(welcomeMsg.message, welcomeMsg.buttons);
@@ -285,7 +288,7 @@ async function updateUserStatus(userId, status) {
   const userSheet = doc.sheetsByTitle['Users'];
   const rows = await userSheet.getRows();
   const userRow = rows.find(row => row.get('userId') === userId);
-  if(userRow){
+  if (userRow) {
     userRow.set('status', status);
     userRow.set('lastActive', new Date());
     await userRow.save();
@@ -296,7 +299,7 @@ async function saveUserTheme(userId, theme) {
   const userSheet = doc.sheetsByTitle['Users'];
   const rows = await userSheet.getRows();
   const userRow = rows.find(row => row.get('userId') === userId);
-  if(userRow){
+  if (userRow) {
     userRow.set('status', 'active');
     userRow.set('currentTheme', theme);
     userRow.set('currentWeek', getCurrentWeekString());
@@ -326,9 +329,9 @@ async function getMessage(messageId) {
 async function getQuestion(theme, day) {
   const questionSheet = doc.sheetsByTitle['Questions'];
   const rows = await questionSheet.getRows();
-  const matchingQuestions = rows.filter(row => 
-    row.get('Theme') === theme && 
-    row.get('Day') === day && 
+  const matchingQuestions = rows.filter(row =>
+    row.get('Theme') === theme &&
+    row.get('Day') === day &&
     (row.get('Active') === 'TRUE' || row.get('Active') === true)
   );
   if (matchingQuestions.length > 0) {
@@ -359,7 +362,7 @@ async function saveUserAnswer(userId, answer) {
 
   const question = await getQuestionById(user.lastQuestionId);
   const dayOfWeek = getCurrentDayString();
-  
+
   const answerSheet = doc.sheetsByTitle['Answers'];
   await answerSheet.addRow({
     AnswerID: 'A' + new Date().getTime(), userId: userId, week: user.currentWeek,
@@ -369,7 +372,7 @@ async function saveUserAnswer(userId, answer) {
   });
 
   const userRow = (await userSheet.getRows()).find(row => row.get('userId') === userId);
-  if(userRow){
+  if (userRow) {
     userRow.set('noResponseWeek', 0);
     userRow.set('lastQuestionId', '');
     await userRow.save();
@@ -387,13 +390,13 @@ async function sendMondayThemeSelection() {
   for (const row of rows) {
     const currentStatus = row.get('status');
     const currentWeek = row.get('currentWeek');
-    const thisWeek = getCurrentWeekString(); 
+    const thisWeek = getCurrentWeekString();
 
     if (currentStatus === 'waiting_monday' || (currentStatus === 'active' && currentWeek !== thisWeek)) {
       const userId = row.get('userId');
       const message = createMessageObject(mondayMsg.message, mondayMsg.buttons);
       await client.pushMessage(userId, message);
-      row.set('status', 'waiting_theme'); 
+      row.set('status', 'waiting_theme');
       row.set('lastActive', new Date());
       await row.save();
     }
@@ -401,47 +404,47 @@ async function sendMondayThemeSelection() {
 }
 
 async function sendDailyQuestionForUser(userId) {
-    const userSheet = doc.sheetsByTitle['Users'];
-    const rows = await userSheet.getRows();
-    const row = rows.find(r => r.get('userId') === userId);
-    
-    if (!row) return;
+  const userSheet = doc.sheetsByTitle['Users'];
+  const rows = await userSheet.getRows();
+  const row = rows.find(r => r.get('userId') === userId);
 
-    const dayString = getCurrentDayString();
-    const status = row.get('status');
-    const theme = row.get('currentTheme');
+  if (!row) return;
 
-    if (status === 'active' && theme) {
-      const question = await getQuestion(theme, dayString);
-      if (question) {
-        let messageText = '';
-        const themeChinese = THEME_MAP[theme] || theme;
-        
-        const today = new Date().getDay();
-        if (today !== 1) { // 週一不檢查昨天
-            const yesterdayAnswered = await checkYesterdayAnswer(userId);
-            if (!yesterdayAnswered) { 
-              const skipMsg = await getMessage('SKIP_YESTERDAY');
-              if(skipMsg) messageText += skipMsg.message + '\n\n';
-            }
+  const dayString = getCurrentDayString();
+  const status = row.get('status');
+  const theme = row.get('currentTheme');
+
+  if (status === 'active' && theme) {
+    const question = await getQuestion(theme, dayString);
+    if (question) {
+      let messageText = '';
+      const themeChinese = THEME_MAP[theme] || theme;
+
+      const today = new Date().getDay();
+      if (today !== 1) { // 週一不檢查昨天
+        const yesterdayAnswered = await checkYesterdayAnswer(userId);
+        if (!yesterdayAnswered) {
+          const skipMsg = await getMessage('SKIP_YESTERDAY');
+          if (skipMsg) messageText += skipMsg.message + '\n\n';
         }
-        
-        const dailyMsg = await getMessage('DAILY_QUESTION');
-        if (dailyMsg) {
-          messageText += dailyMsg.message.replace('【主題】', themeChinese).replace('【從問題庫隨機抽取】', question.question);
-        } else {
-          messageText += `關於 ${themeChinese}：\n\n${question.question}`;
-        }
-        
-        await client.pushMessage(userId, { type: 'text', text: messageText });
-        row.set('status', 'waiting_answer');
-        row.set('lastQuestionId', question.questionId);
-        row.set('lastActive', new Date());
-        await row.save();
-      } else {
-        console.log(`找不到問題: 主題=${theme}, 天=${dayString}, 未發送給用戶 ${userId}`);
       }
+
+      const dailyMsg = await getMessage('DAILY_QUESTION');
+      if (dailyMsg) {
+        messageText += dailyMsg.message.replace('【主題】', themeChinese).replace('【從問題庫隨機抽取】', question.question);
+      } else {
+        messageText += `關於 ${themeChinese}：\n\n${question.question}`;
+      }
+
+      await client.pushMessage(userId, { type: 'text', text: messageText });
+      row.set('status', 'waiting_answer');
+      row.set('lastQuestionId', question.questionId);
+      row.set('lastActive', new Date());
+      await row.save();
+    } else {
+      console.log(`找不到問題: 主題=${theme}, 天=${dayString}, 未發送給用戶 ${userId}`);
     }
+  }
 }
 
 async function sendDailyQuestion() {
@@ -455,7 +458,7 @@ async function sendDailyQuestion() {
 async function sendSaturdayReview() {
   const userSheet = doc.sheetsByTitle['Users'];
   const rows = await userSheet.getRows();
-  
+
   for (const row of rows) {
     const status = row.get('status');
     const theme = row.get('currentTheme');
@@ -467,14 +470,14 @@ async function sendSaturdayReview() {
       const responseDays = await countWeeklyResponses(userId, currentWeek);
       const messageId = responseDays === 0 ? 'SATURDAY_NO_RESPONSE' : 'SATURDAY_START';
       const saturdayMsg = await getMessage(messageId);
-      
+
       if (saturdayMsg) {
         const themeChinese = THEME_MAP[theme] || theme;
         let messageText = saturdayMsg.message.replace('【主題】', themeChinese);
         const message = createMessageObject(messageText, responseDays > 0 ? saturdayMsg.buttons : null);
         await client.pushMessage(userId, message);
       }
-      
+
       row.set('noResponseWeek', responseDays === 0 ? noResponseWeek + 1 : 0);
       await row.save();
     }
@@ -488,7 +491,7 @@ async function sendMonthlyReview() {
   for (const userRow of allUsers) {
     const userId = userRow.get('userId');
     const hasEnoughData = await hasEnoughMonthlyData(userId);
-    
+
     if (hasEnoughData) {
       console.log(`Generating monthly insight for user ${userId}`);
       const insightText = await generateMonthlyAiInsight(userId);
@@ -504,7 +507,7 @@ async function sendMonthlyReview() {
 async function checkYesterdayAnswer(userId) {
   const answerSheet = doc.sheetsByTitle['Answers'];
   const rows = await answerSheet.getRows();
-  
+
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const yesterdayString = yesterday.toISOString().split('T')[0];
@@ -518,7 +521,7 @@ async function checkYesterdayAnswer(userId) {
         return true;
       }
       if (answerDate < yesterday) {
-          return false;
+        return false;
       }
     }
   }
@@ -559,7 +562,7 @@ async function getWeeklyRecords(userId) {
     const fallbackMsg = await getMessage('GENERIC_ERROR');
     return msg ? msg.message : (fallbackMsg ? fallbackMsg.message : "看來這週你沒有留下任何紀錄喔！");
   }
-  
+
   const responseDays = new Set(weeklyAnswers.map(row => row.get('day'))).size;
 
   const dayMap = { 'MON': '週一', 'TUE': '週二', 'WED': '週三', 'THU': '週四', 'FRI': '週五' };
@@ -597,7 +600,7 @@ async function generateAiInsight(userId) {
 
   const systemPromptMsg = await getMessage('WEEKLY_AI_PROMPT');
   const systemPrompt = systemPromptMsg ? systemPromptMsg.message : "你是一個溫暖的夥伴，請總結使用者的紀錄。";
-  
+
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -607,7 +610,7 @@ async function generateAiInsight(userId) {
       ],
     });
     const aiResponse = completion.choices[0].message.content;
-    const prefixMsg = await getMessage('SUNDAY_AI_INSIGHT_PREFIX'); // Keep these MessageIDs for now
+    const prefixMsg = await getMessage('SUNDAY_AI_INSIGHT_PREFIX');
     const suffixMsg = await getMessage('SUNDAY_AI_INSIGHT_SUFFIX');
     let finalText = '';
     if (prefixMsg) finalText += prefixMsg.message + '\n\n';
