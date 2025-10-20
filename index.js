@@ -34,47 +34,35 @@ const app = express();
 // --- 2. Webhook & 測試路徑 ---
 
 app.get('/', (req, res) => {
-  res.status(200).send('OK');
+  console.log('Root path / was hit by a GET request.');
+  res.status(200).send('OK - Service is running.');
 });
 
-app.get('/test-saturday-review', async (req, res) => {
-  console.log('手動觸發週六回顧');
-  try {
-    await doc.loadInfo();
-    await sendSaturdayReview();
-    res.status(200).send('週六回顧任務已觸發');
-  } catch (err) {
-    console.error('手動觸發週六回顧時發生錯誤:', err);
-    res.status(500).send('觸發失敗，請檢查 Logs');
-  }
+app.post('/webhook', (req, res, next) => {
+  console.log('!!! A POST request has hit /webhook. Now passing to LINE middleware...');
+  // 手動調用 LINE middleware
+  line.middleware(lineConfig)(req, res, (err) => {
+    if (err) {
+      console.error('!!! LINE Middleware Error:', err.message);
+      // 即使有錯，我們也回傳 200 OK，避免 LINE 重試
+      return res.status(200).send('Middleware Error'); 
+    }
+    console.log('!!! LINE Middleware validation successful. Passing to handleEvent...');
+    next();
+  });
+}, (req, res) => {
+  if (!req.body.events || req.body.events.length === 0) {
+    console.log('Webhook received but no events found.');
+    return res.json({});
+  }
+  Promise
+    .all(req.body.events.map(handleEvent))
+    .then((result) => res.json(result))
+    .catch((err) => {
+      console.error(err);
+      res.status(500).end();
+    });
 });
-
-app.post('/webhook', line.middleware(lineConfig), (req, res) => {
-  if (!req.body.events || req.body.events.length === 0) {
-    return res.json({});
-  }
-  Promise
-    .all(req.body.events.map(handleEvent))
-    .then((result) => res.json(result))
-    .catch((err) => {
-      console.error(err);
-      res.status(500).end();
-    });
-});
-
-async function handleEvent(event) {
-  try {
-    await doc.loadInfo(); 
-    if (event.type === 'message' && event.message.type === 'text') {
-      await handleTextMessage(event);
-    } else if (event.type === 'postback') {
-      await handlePostback(event);
-    }
-  } catch (err) {
-    console.error('Error in handleEvent:', err);
-  }
-  return Promise.resolve(null);
-}
 
 // --- 3. 定時任務排程 ---
 
