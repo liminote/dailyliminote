@@ -1,5 +1,5 @@
 // ========================================
-// 隙音 LINE Bot - Render (V3.0 - 新互動流程 最終完整版)
+// 隙音 LINE Bot - Render (V3.2 - 修正週末按鈕邏輯版)
 // ========================================
 const express = require('express');
 const line = require('@line/bot-sdk');
@@ -204,6 +204,11 @@ async function handlePostback(event) {
     case 'select_theme':
       await handleThemeSelection(replyToken, userId, params.theme);
       break;
+      
+    case 'start_question':
+      await sendDailyQuestionForUser(userId);
+      // No reply needed here as it's a push message
+      break;
 
     case 'how_to_play':
       await replyWithText(replyToken, 'HOW_TO_PLAY', 'HOW_TO_PLAY_FALLBACK');
@@ -227,25 +232,40 @@ async function handlePostback(event) {
   }
 }
 
+// [邏輯修改] 只有週一到週五才顯示「開始回答」按鈕
 async function handleThemeSelection(replyToken, userId, theme) {
-  await saveUserTheme(userId, theme);
+  await saveUserTheme(userId, theme); // 狀態已設為 active
+  
   const messageId = 'CONFIRM_' + theme;
   const confirmMsg = await getMessage(messageId);
+  let text;
+
   if (confirmMsg) {
-    await client.replyMessage(replyToken, { type: 'text', text: confirmMsg.message });
+    text = confirmMsg.message;
   } else {
     const fallbackMsg = await getMessage('THEME_CONFIRM_FALLBACK');
     const themeChinese = THEME_MAP[theme] || '這個主題';
-    const text = fallbackMsg ? fallbackMsg.message.replace('【主題】', themeChinese) : `收到。\n\n這週，我們一起關注「${themeChinese}」。`;
-    await client.replyMessage(replyToken, { type: 'text', text: text });
+    text = fallbackMsg ? fallbackMsg.message.replace('【主題】', themeChinese) : `收到。\n\n這週，我們一起關注「${themeChinese}」。`;
   }
-  setTimeout(async () => {
-    await sendDailyQuestionForUser(userId);
-  }, 1000);
+
+  // 判斷今天是否為週一到週五
+  const today = new Date().getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+  let buttons = null;
+  if (today >= 1 && today <= 5) { // 如果是週一到週五
+    buttons = [{"label":"開始回答今天問題","data":"action=start_question"}];
+  } else {
+    // 如果是週六或週日，可以考慮加上提示文字
+    text += '\n\n問題將從下週一開始。';
+  }
+
+  const message = createMessageObject(text, buttons);
+  await client.replyMessage(replyToken, message);
 }
+
 
 async function sendWelcomeMessage(replyToken, userId) {
   const today = new Date().getDay();
+  // 週日加入也視為非週一
   const messageId = (today === 1) ? 'WELCOME_MONDAY' : 'WELCOME_OTHER_DAY';
   const welcomeMsg = await getMessage(messageId);
   if (welcomeMsg) {
@@ -375,25 +395,18 @@ async function sendMondayThemeSelection() {
   if (!mondayMsg) { console.error("Message 'MONDAY_WEEK1' not found."); return; }
 
   for (const row of rows) {
-    // [邏輯修正] 只針對 waiting_monday 的使用者，或本週尚未設定主題的 active 使用者
     const currentStatus = row.get('status');
     const currentWeek = row.get('currentWeek');
-    const thisWeek = getCurrentWeekString(); // 取得當前的週次字串
+    const thisWeek = getCurrentWeekString(); 
 
-    // 只有當使用者狀態是 waiting_monday，
-    // 或者使用者是 active 但他的 currentWeek 不是本週 (代表他是上週殘留的 active)，
-    // 才需要發送週一主題選擇
     if (currentStatus === 'waiting_monday' || (currentStatus === 'active' && currentWeek !== thisWeek)) {
       const userId = row.get('userId');
       const message = createMessageObject(mondayMsg.message, mondayMsg.buttons);
       await client.pushMessage(userId, message);
-      row.set('status', 'waiting_theme'); // 設定為等待選擇主題
+      row.set('status', 'waiting_theme'); 
       row.set('lastActive', new Date());
-      // 注意：這裡不再主動清除 currentTheme 或 currentWeek，讓使用者重新選擇時覆蓋即可
       await row.save();
     }
-    // 如果使用者已經是 active 且 currentWeek 是本週，代表他可能週一當天加入並選了主題，
-    // 或者他是從上週順利過渡到本週的活躍用戶，這種情況下就不需要再打擾他選主題。
   }
 }
 
@@ -604,7 +617,7 @@ async function generateAiInsight(userId) {
       ],
     });
     const aiResponse = completion.choices[0].message.content;
-    const prefixMsg = await getMessage('SUNDAY_AI_INSIGHT_PREFIX');
+    const prefixMsg = await getMessage('SUNDAY_AI_INSIGHT_PREFIX'); // Keep these MessageIDs for now
     const suffixMsg = await getMessage('SUNDAY_AI_INSIGHT_SUFFIX');
     let finalText = '';
     if (prefixMsg) finalText += prefixMsg.message + '\n\n';
