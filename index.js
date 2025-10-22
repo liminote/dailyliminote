@@ -38,6 +38,87 @@ app.get('/', (req, res) => {
   res.status(200).send('OK');
 });
 
+// --- 2.1 CRON Endpoints（給外部 CRON 服務呼叫）---
+
+// 安全驗證中介軟體
+function verifyCronSecret(req, res, next) {
+  const secret = req.query.secret || req.headers['x-cron-secret'];
+  const expectedSecret = process.env.CRON_SECRET;
+
+  if (!expectedSecret) {
+    console.warn('CRON_SECRET not set in environment variables');
+    return res.status(500).json({ error: 'CRON_SECRET not configured' });
+  }
+
+  if (secret !== expectedSecret) {
+    console.warn('Invalid CRON secret attempt');
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  next();
+}
+
+// 週一 9:00 - 發送主題選擇
+app.get('/cron/monday-theme', verifyCronSecret, async (req, res) => {
+  console.log('CRON endpoint triggered: /cron/monday-theme');
+  try {
+    await doc.loadInfo();
+    await sendMondayThemeSelection();
+    res.status(200).json({ success: true, message: 'Monday theme selection sent' });
+  } catch (err) {
+    console.error('Error in /cron/monday-theme:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 週二至週五 9:00 - 發送每日問題
+app.get('/cron/daily-question', verifyCronSecret, async (req, res) => {
+  console.log('CRON endpoint triggered: /cron/daily-question');
+  try {
+    await doc.loadInfo();
+    await sendDailyQuestion();
+    res.status(200).json({ success: true, message: 'Daily questions sent' });
+  } catch (err) {
+    console.error('Error in /cron/daily-question:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 週六 20:00 - 發送週末回顧
+app.get('/cron/saturday-review', verifyCronSecret, async (req, res) => {
+  console.log('CRON endpoint triggered: /cron/saturday-review');
+  try {
+    await doc.loadInfo();
+    await sendSaturdayReview();
+    res.status(200).json({ success: true, message: 'Saturday review sent' });
+  } catch (err) {
+    console.error('Error in /cron/saturday-review:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 每月最後一天 22:00 - 發送月度總結
+app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
+  console.log('CRON endpoint triggered: /cron/monthly-review');
+  try {
+    const today = new Date();
+    const tomorrow = new Date(today);
+    tomorrow.setDate(today.getDate() + 1);
+
+    // 檢查明天是否為該月第一天
+    if (tomorrow.getDate() === 1) {
+      await doc.loadInfo();
+      await sendMonthlyReview();
+      res.status(200).json({ success: true, message: 'Monthly review sent' });
+    } else {
+      res.status(200).json({ success: true, message: 'Not last day of month, skipped' });
+    }
+  } catch (err) {
+    console.error('Error in /cron/monthly-review:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // 標準的 Webhook 處理器
 app.post('/webhook', line.middleware(lineConfig), (req, res) => {
   if (!req.body.events || req.body.events.length === 0) {
