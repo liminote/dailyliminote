@@ -495,6 +495,19 @@ async function sendDailyQuestionForUser(userId) {
   const status = row.get('status');
   const theme = row.get('currentTheme');
 
+  // 檢查：如果狀態是 waiting_answer，表示已經發送過問題了，跳過
+  if (status === 'waiting_answer') {
+    console.log(`User ${userId} is already waiting for an answer, skipping.`);
+    return;
+  }
+
+  // 檢查：如果今天已經回答過了，不要再發送
+  const todayAnswered = await checkTodayAnswer(userId);
+  if (todayAnswered) {
+    console.log(`User ${userId} has already answered today's question, skipping.`);
+    return;
+  }
+
   if (status === 'active' && theme) {
     const question = await getQuestion(theme, dayString);
     if (question) {
@@ -603,6 +616,26 @@ async function checkYesterdayAnswer(userId) {
       }
       if (answerDate < yesterday) {
         return false;
+      }
+    }
+  }
+  return false;
+}
+
+async function checkTodayAnswer(userId) {
+  const answerSheet = doc.sheetsByTitle['Answers'];
+  const rows = await answerSheet.getRows();
+
+  const today = new Date();
+  const todayString = today.toISOString().split('T')[0];
+
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i];
+    if (row.get('userId') === userId) {
+      const answerDate = new Date(row.get('timestamp'));
+      const answerDateString = answerDate.toISOString().split('T')[0];
+      if (answerDateString === todayString) {
+        return true;
       }
     }
   }
