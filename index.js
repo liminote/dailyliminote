@@ -76,8 +76,9 @@ app.get('/cron/daily-question', verifyCronSecret, async (req, res) => {
   console.log('CRON endpoint triggered: /cron/daily-question');
   try {
     await doc.loadInfo();
-    await sendDailyQuestion();
-    res.status(200).json({ success: true, message: 'Daily questions sent' });
+    const result = await sendDailyQuestion();
+    console.log('Daily question execution completed:', result);
+    res.status(200).json({ success: true, message: 'Daily questions sent', ...result });
   } catch (err) {
     console.error('Error in /cron/daily-question:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -489,64 +490,122 @@ async function sendDailyQuestionForUser(userId) {
   const rows = await userSheet.getRows();
   const row = rows.find(r => r.get('userId') === userId);
 
-  if (!row) return;
+  if (!row) {
+    return { sent: false, reason: 'User not found' };
+  }
 
   const dayString = getCurrentDayString();
   const status = row.get('status');
   const theme = row.get('currentTheme');
 
-  // 檢查：如果狀態是 waiting_answer，表示已經發送過問題了，跳過
-  if (status === 'waiting_answer') {
-    console.log(`User ${userId} is already waiting for an answer, skipping.`);
-    return;
-  }
-
   // 檢查：如果今天已經回答過了，不要再發送
   const todayAnswered = await checkTodayAnswer(userId);
   if (todayAnswered) {
-    console.log(`User ${userId} has already answered today's question, skipping.`);
-    return;
+    return { sent: false, reason: 'Already answered today' };
   }
 
-  if (status === 'active' && theme) {
-    const question = await getQuestion(theme, dayString);
-    if (question) {
-      let messageText = '';
-      const themeChinese = THEME_MAP[theme] || theme;
+  // 檢查：如果狀態是 waiting_answer，檢查是否是今天發送的
+  if (status === 'waiting_answer') {
+    const lastActive = row.get('lastActive');
+    if (lastActive) {
+      const lastActiveDate = new Date(lastActive);
+      const today = new Date();
+      const isSameDay = lastActiveDate.toISOString().split('T')[0] === today.toISOString().split('T')[0];
 
-      const today = new Date().getDay();
-      if (today !== 1) { // 週一不檢查昨天
-        const yesterdayAnswered = await checkYesterdayAnswer(userId);
-        if (!yesterdayAnswered) {
-          const skipMsg = await getMessage('SKIP_YESTERDAY');
-          if (skipMsg) messageText += skipMsg.message + '\n\n';
-        }
-      }
-
-      const dailyMsg = await getMessage('DAILY_QUESTION');
-      if (dailyMsg) {
-        messageText += dailyMsg.message.replace('【主題】', themeChinese).replace('【從問題庫隨機抽取】', question.question);
+      if (isSameDay) {
+        // 今天已經發送過問題了，跳過
+        return { sent: false, reason: `Already sent today (status: waiting_answer, lastActive: ${lastActiveDate.toISOString()})` };
       } else {
-        messageText += `關於 ${themeChinese}：\n\n${question.question}`;
+        // 是昨天或更早發送的，使用者忘記回答，繼續發送今天的問題
+        console.log(`User ${userId} didn't answer yesterday's question, sending today's question anyway`);
       }
-
-      await client.pushMessage(userId, { type: 'text', text: messageText });
-      row.set('status', 'waiting_answer');
-      row.set('lastQuestionId', question.questionId);
-      row.set('lastActive', new Date());
-      await row.save();
-    } else {
-      console.log(`找不到問題: 主題=${theme}, 天=${dayString}, 未發送給用戶 ${userId}`);
     }
   }
+
+  // 檢查狀態和主題
+  if (status !== 'active') {
+    return { sent: false, reason: `Status is '${status}' (not 'active')` };
+  }
+
+  if (!theme) {
+    return { sent: false, reason: 'No theme set' };
+  }
+
+  const question = await getQuestion(theme, dayString);
+  if (!question) {
+    return { sent: false, reason: `No question found for theme=${theme}, day=${dayString}` };
+  }
+
+  // 發送問題
+  let messageText = '';
+  const themeChinese = THEME_MAP[theme] || theme;
+
+  const today = new Date().getDay();
+  if (today !== 1) { // 週一不檢查昨天
+    const yesterdayAnswered = await checkYesterdayAnswer(userId);
+    if (!yesterdayAnswered) {
+      const skipMsg = await getMessage('SKIP_YESTERDAY');
+      if (skipMsg) messageText += skipMsg.message + '\n\n';
+    }
+  }
+
+  const dailyMsg = await getMessage('DAILY_QUESTION');
+  if (dailyMsg) {
+    messageText += dailyMsg.message.replace('【主題】', themeChinese).replace('【從問題庫隨機抽取】', question.question);
+  } else {
+    messageText += `關於 ${themeChinese}：\n\n${question.question}`;
+  }
+
+  await client.pushMessage(userId, { type: 'text', text: messageText });
+  row.set('status', 'waiting_answer');
+  row.set('lastQuestionId', question.questionId);
+  row.set('lastActive', new Date());
+  await row.save();
+
+  return { sent: true, reason: 'Success' };
 }
 
 async function sendDailyQuestion() {
   const userSheet = doc.sheetsByTitle['Users'];
   const rows = await userSheet.getRows();
+
+  let totalUsers = rows.length;
+  let sentCount = 0;
+  let skippedCount = 0;
+  let skippedReasons = [];
+
   for (const row of rows) {
-    await sendDailyQuestionForUser(row.get('userId'));
+    const userId = row.get('userId');
+    const result = await sendDailyQuestionForUser(userId);
+
+    if (result.sent) {
+      sentCount++;
+      console.log(`✓ Sent question to user ${userId}`);
+    } else {
+      skippedCount++;
+      const reason = `User ${userId}: ${result.reason}`;
+      skippedReasons.push(reason);
+      console.log(`✗ Skipped user ${userId} - ${result.reason}`);
+    }
   }
+
+  const summary = {
+    totalUsers,
+    sentCount,
+    skippedCount,
+    skippedReasons
+  };
+
+  console.log('===== Daily Question Summary =====');
+  console.log(`Total users: ${totalUsers}`);
+  console.log(`Messages sent: ${sentCount}`);
+  console.log(`Users skipped: ${skippedCount}`);
+  if (skippedReasons.length > 0) {
+    console.log('Skip reasons:', skippedReasons);
+  }
+  console.log('==================================');
+
+  return summary;
 }
 
 async function sendSaturdayReview() {
