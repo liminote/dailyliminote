@@ -38,6 +38,33 @@ app.get('/', (req, res) => {
   res.status(200).send('OK');
 });
 
+// 健康檢查端點 - 包含預熱功能
+app.get('/health', async (req, res) => {
+  try {
+    const startTime = Date.now();
+
+    // 預熱：載入 Google Spreadsheet 連線
+    await doc.loadInfo();
+
+    const loadTime = Date.now() - startTime;
+
+    res.status(200).json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      loadTime: `${loadTime}ms`,
+      spreadsheet: doc.title || 'connected'
+    });
+  } catch (err) {
+    console.error('Health check failed:', err);
+    res.status(503).json({
+      status: 'unhealthy',
+      error: err.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // --- 2.1 CRON Endpoints（給外部 CRON 服務呼叫）---
 
 // 安全驗證中介軟體
@@ -73,15 +100,37 @@ app.get('/cron/monday-theme', verifyCronSecret, async (req, res) => {
 
 // 週二至週五 9:00 - 發送每日問題
 app.get('/cron/daily-question', verifyCronSecret, async (req, res) => {
+  const startTime = Date.now();
   console.log('CRON endpoint triggered: /cron/daily-question');
+
   try {
-    await doc.loadInfo();
+    // 確保 Spreadsheet 已載入
+    if (!doc.title) {
+      console.log('Loading spreadsheet for the first time...');
+      await doc.loadInfo();
+    }
+
     const result = await sendDailyQuestion();
+    const executionTime = Date.now() - startTime;
+
     console.log('Daily question execution completed:', result);
-    res.status(200).json({ success: true, message: 'Daily questions sent', ...result });
+    console.log(`Execution time: ${executionTime}ms`);
+
+    res.status(200).json({
+      success: true,
+      message: 'Daily questions sent',
+      executionTime: `${executionTime}ms`,
+      ...result
+    });
   } catch (err) {
+    const executionTime = Date.now() - startTime;
     console.error('Error in /cron/daily-question:', err);
-    res.status(500).json({ success: false, error: err.message });
+    console.error(`Failed after ${executionTime}ms`);
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      executionTime: `${executionTime}ms`
+    });
   }
 });
 
