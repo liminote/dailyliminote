@@ -47,10 +47,15 @@ app.get('/health', async (req, res) => {
     await doc.loadInfo();
 
     const loadTime = Date.now() - startTime;
+    const now = new Date();
 
     res.status(200).json({
       status: 'healthy',
-      timestamp: new Date().toISOString(),
+      timestamp: now.toISOString(),
+      localTime: now.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }),
+      serverTime: now.toLocaleString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      tzOffset: now.getTimezoneOffset(),
       uptime: process.uptime(),
       loadTime: `${loadTime}ms`,
       spreadsheet: doc.title || 'connected'
