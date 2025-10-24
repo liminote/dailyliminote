@@ -553,6 +553,11 @@ async function sendDailyQuestionForUser(userId) {
     return { sent: false, reason: 'Already answered today' };
   }
 
+  // 檢查狀態和主題
+  if (status !== 'active' && status !== 'waiting_answer') {
+    return { sent: false, reason: `Status is '${status}' (not 'active' or 'waiting_answer')` };
+  }
+
   // 檢查：如果狀態是 waiting_answer，檢查是否是今天發送的
   if (status === 'waiting_answer') {
     const lastActive = row.get('lastActive');
@@ -567,13 +572,9 @@ async function sendDailyQuestionForUser(userId) {
       } else {
         // 是昨天或更早發送的，使用者忘記回答，繼續發送今天的問題
         console.log(`User ${userId} didn't answer yesterday's question, sending today's question anyway`);
+        // 允許繼續發送
       }
     }
-  }
-
-  // 檢查狀態和主題
-  if (status !== 'active') {
-    return { sent: false, reason: `Status is '${status}' (not 'active')` };
   }
 
   if (!theme) {
