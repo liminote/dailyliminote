@@ -204,51 +204,53 @@ async function handleEvent(event) {
 }
 
 // --- 3. 定時任務排程 ---
+// 注意：已停用內建 node-cron，改用外部 cron-job.org 服務
+// 原因：避免與外部 CRON 重複執行，且 Render 免費方案會休眠導致內建 cron 不可靠
 
-cron.schedule('0 9 * * 1', async () => {
-  console.log('Running: sendMondayThemeSelection @ 9:00 AM Taipei Time');
-  try {
-    await doc.loadInfo();
-    await sendMondayThemeSelection();
-  } catch (err) {
-    console.error('Error in sendMondayThemeSelection cron job:', err);
-  }
-}, { timezone: "Asia/Taipei" });
+// cron.schedule('0 9 * * 1', async () => {
+//   console.log('Running: sendMondayThemeSelection @ 9:00 AM Taipei Time');
+//   try {
+//     await doc.loadInfo();
+//     await sendMondayThemeSelection();
+//   } catch (err) {
+//     console.error('Error in sendMondayThemeSelection cron job:', err);
+//   }
+// }, { timezone: "Asia/Taipei" });
 
-cron.schedule('0 9 * * 2-5', async () => {
-  console.log('Running: sendDailyQuestion @ 9:00 AM Taipei Time');
-  try {
-    await doc.loadInfo();
-    await sendDailyQuestion();
-  } catch (err) {
-    console.error('Error in sendDailyQuestion cron job:', err);
-  }
-}, { timezone: "Asia/Taipei" });
+// cron.schedule('0 9 * * 2-5', async () => {
+//   console.log('Running: sendDailyQuestion @ 9:00 AM Taipei Time');
+//   try {
+//     await doc.loadInfo();
+//     await sendDailyQuestion();
+//   } catch (err) {
+//     console.error('Error in sendDailyQuestion cron job:', err);
+//   }
+// }, { timezone: "Asia/Taipei" });
 
-cron.schedule('0 20 * * 6', async () => {
-  console.log('Running: sendSaturdayReview @ 8:00 PM Taipei Time');
-  try {
-    await doc.loadInfo();
-    await sendSaturdayReview();
-  } catch (err) {
-    console.error('Error in sendSaturdayReview cron job:', err);
-  }
-}, { timezone: "Asia/Taipei" });
+// cron.schedule('0 20 * * 6', async () => {
+//   console.log('Running: sendSaturdayReview @ 8:00 PM Taipei Time');
+//   try {
+//     await doc.loadInfo();
+//     await sendSaturdayReview();
+//   } catch (err) {
+//     console.error('Error in sendSaturdayReview cron job:', err);
+//   }
+// }, { timezone: "Asia/Taipei" });
 
-cron.schedule('0 22 * * *', async () => {
-  const today = new Date();
-  const tomorrow = new Date(today);
-  tomorrow.setDate(today.getDate() + 1);
-  if (tomorrow.getDate() === 1) {
-    console.log('Running: sendMonthlyReview @ 10:00 PM on Last Day of Month');
-    try {
-      await doc.loadInfo();
-      await sendMonthlyReview();
-    } catch (err) {
-      console.error('Error in sendMonthlyReview cron job:', err);
-    }
-  }
-}, { timezone: "Asia/Taipei" });
+// cron.schedule('0 22 * * *', async () => {
+//   const today = new Date();
+//   const tomorrow = new Date(today);
+//   tomorrow.setDate(today.getDate() + 1);
+//   if (tomorrow.getDate() === 1) {
+//     console.log('Running: sendMonthlyReview @ 10:00 PM on Last Day of Month');
+//     try {
+//       await doc.loadInfo();
+//       await sendMonthlyReview();
+//     } catch (err) {
+//       console.error('Error in sendMonthlyReview cron job:', err);
+//     }
+//   }
+// }, { timezone: "Asia/Taipei" });
 
 
 // --- 4. 核心程式碼邏輯 ---
@@ -420,6 +422,10 @@ async function updateUserStatus(userId, status) {
   const rows = await userSheet.getRows();
   const userRow = rows.find(row => row.get('userId') === userId);
   if (userRow) {
+    const oldStatus = userRow.get('status');
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] Status change for user ${userId}: ${oldStatus} -> ${status}`);
+
     userRow.set('status', status);
     userRow.set('lastActive', new Date());
     await userRow.save();
@@ -607,6 +613,11 @@ async function sendDailyQuestionForUser(userId) {
   }
 
   await client.pushMessage(userId, { type: 'text', text: messageText });
+
+  const oldStatus = row.get('status');
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] sendDailyQuestionForUser: Status change for user ${userId}: ${oldStatus} -> waiting_answer`);
+
   row.set('status', 'waiting_answer');
   row.set('lastQuestionId', question.questionId);
   row.set('lastActive', new Date());
