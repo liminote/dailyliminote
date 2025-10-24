@@ -300,6 +300,10 @@ async function handleTextMessage(event) {
     await saveUserAnswer(userId, event.message.text);
     await replyWithText(replyToken, 'HEARD');
     await updateUserStatus(userId, 'active');
+  } else if (user.status === 'saturday_showed_record') {
+    // 使用者在週六看過紀錄後，又發送了文字訊息
+    await replyWithText(replyToken, 'SATURDAY_END');
+    await updateUserStatus(userId, 'active');
   } else if (user.status === 'active') {
     await replyWithText(replyToken, 'ACK_ACTIVE');
   } else {
@@ -357,13 +361,16 @@ async function handlePostback(event) {
     case 'show_record':
       const recordsText = await getWeeklyRecords(userId);
       await client.replyMessage(replyToken, { type: 'text', text: recordsText });
+      // 設定狀態為「週六回顧後」，等待使用者輸入
+      await updateUserStatus(userId, 'saturday_showed_record');
       break;
 
-    case 'get_insight':
-      await client.replyMessage(replyToken, { type: 'text', text: '好的，正在為您產生 AI 總結，請稍候幾秒鐘...' });
-      const insightText = await generateAiInsight(userId);
-      await client.pushMessage(userId, { type: 'text', text: insightText });
-      break;
+    // AI 總結功能已移除
+    // case 'get_insight':
+    //   await client.replyMessage(replyToken, { type: 'text', text: '好的，正在為您產生 AI 總結，請稍候幾秒鐘...' });
+    //   const insightText = await generateAiInsight(userId);
+    //   await client.pushMessage(userId, { type: 'text', text: insightText });
+    //   break;
   }
 }
 
@@ -849,13 +856,8 @@ async function generateAiInsight(userId) {
       ],
     });
     const aiResponse = completion.choices[0].message.content;
-    const prefixMsg = await getMessage('SUNDAY_AI_INSIGHT_PREFIX');
-    const suffixMsg = await getMessage('SUNDAY_AI_INSIGHT_SUFFIX');
-    let finalText = '';
-    if (prefixMsg) finalText += prefixMsg.message + '\n\n';
-    finalText += aiResponse;
-    if (suffixMsg) finalText += '\n\n' + suffixMsg.message;
-    return finalText;
+    // AI 總結功能已簡化，不再使用 SUNDAY_AI_INSIGHT_PREFIX/SUFFIX
+    return aiResponse;
   } catch (error) {
     console.error("Error calling OpenAI API:", error);
     const msg = await getMessage('AI_ERROR_WEEKLY');
