@@ -541,7 +541,12 @@ async function sendMondayThemeSelection() {
     const currentWeek = row.get('currentWeek');
     const thisWeek = getCurrentWeekString();
 
-    if (currentStatus === 'waiting_monday' || (currentStatus === 'active' && currentWeek !== thisWeek)) {
+    // 發送條件：waiting_monday, saturday_showed_record, 或 active 且週次不同
+    const shouldSend = currentStatus === 'waiting_monday'
+                    || currentStatus === 'saturday_showed_record'
+                    || (currentStatus === 'active' && currentWeek !== thisWeek);
+
+    if (shouldSend) {
       const userId = row.get('userId');
       const message = createMessageObject(mondayMsg.message, mondayMsg.buttons);
       await client.pushMessage(userId, message);
