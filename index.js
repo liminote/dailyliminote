@@ -776,35 +776,56 @@ async function sendSaturdayReview() {
 async function sendMonthlyReview() {
   const userSheet = doc.sheetsByTitle['Users'];
   const insightsSheet = doc.sheetsByTitle['MonthlyInsights'];
+
+  if (!insightsSheet) {
+    console.error('MonthlyInsights sheet not found in spreadsheet');
+    throw new Error('MonthlyInsights sheet not found');
+  }
+
   const allUsers = await userSheet.getRows();
+  console.log(`Found ${allUsers.length} users to check`);
+
+  let sentCount = 0;
+  let skippedCount = 0;
+  let errorCount = 0;
 
   for (const userRow of allUsers) {
     const userId = userRow.get('userId');
-    const hasEnoughData = await hasEnoughMonthlyData(userId);
 
-    if (hasEnoughData) {
-      console.log(`Generating monthly insight for user ${userId}`);
-      const insightText = await generateMonthlyAiInsight(userId);
+    try {
+      const hasEnoughData = await hasEnoughMonthlyData(userId);
 
-      // 發送給使用者
-      await client.pushMessage(userId, { type: 'text', text: insightText });
+      if (hasEnoughData) {
+        console.log(`Generating monthly insight for user ${userId}`);
+        const insightText = await generateMonthlyAiInsight(userId);
 
-      // 保存到 MonthlyInsights Sheet
-      const now = new Date();
-      const monthString = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-      await insightsSheet.addRow({
-        InsightID: 'I' + now.getTime(),
-        UserID: userId,
-        Month: monthString,
-        AIInsight: insightText,
-        CreatedAt: now
-      });
+        // 發送給使用者
+        await client.pushMessage(userId, { type: 'text', text: insightText });
 
-      console.log(`✓ Saved monthly insight for user ${userId} to MonthlyInsights sheet (Month: ${monthString})`);
-    } else {
-      console.log(`Skipping monthly insight for user ${userId}, not enough data.`);
+        // 保存到 MonthlyInsights Sheet
+        const now = new Date();
+        const monthString = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        await insightsSheet.addRow({
+          InsightID: 'I' + now.getTime(),
+          UserID: userId,
+          Month: monthString,
+          AIInsight: insightText,
+          CreatedAt: now
+        });
+
+        sentCount++;
+        console.log(`✓ Saved monthly insight for user ${userId} to MonthlyInsights sheet (Month: ${monthString})`);
+      } else {
+        skippedCount++;
+        console.log(`Skipping monthly insight for user ${userId}, not enough data.`);
+      }
+    } catch (error) {
+      errorCount++;
+      console.error(`Error processing user ${userId}:`, error.message);
     }
   }
+
+  console.log(`Monthly review summary: ${sentCount} sent, ${skippedCount} skipped, ${errorCount} errors`);
 }
 
 // --- 7. 輔助工具函式 ---
