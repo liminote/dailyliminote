@@ -95,8 +95,12 @@ app.get('/cron/monday-theme', verifyCronSecret, async (req, res) => {
   console.log('CRON endpoint triggered: /cron/monday-theme');
   try {
     await doc.loadInfo();
-    await sendMondayThemeSelection();
-    res.status(200).json({ success: true, message: 'Monday theme selection sent' });
+    const summary = await sendMondayThemeSelection();
+    res.status(200).json({
+      success: true,
+      message: 'Monday theme selection completed',
+      summary: summary
+    });
   } catch (err) {
     console.error('Error in /cron/monday-theme:', err);
     res.status(500).json({ success: false, error: err.message });
