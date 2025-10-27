@@ -536,7 +536,14 @@ async function sendMondayThemeSelection() {
   const mondayMsg = await getMessage('MONDAY_WEEK1');
   if (!mondayMsg) { console.error("Message 'MONDAY_WEEK1' not found."); return; }
 
+  let totalUsers = rows.length;
+  let sentCount = 0;
+  let skippedCount = 0;
+  let errorCount = 0;
+  let results = [];
+
   for (const row of rows) {
+    const userId = row.get('userId');
     const currentStatus = row.get('status');
     const currentWeek = row.get('currentWeek');
     const thisWeek = getCurrentWeekString();
@@ -547,14 +554,48 @@ async function sendMondayThemeSelection() {
                     || (currentStatus === 'active' && currentWeek !== thisWeek);
 
     if (shouldSend) {
-      const userId = row.get('userId');
-      const message = createMessageObject(mondayMsg.message, mondayMsg.buttons);
-      await client.pushMessage(userId, message);
-      row.set('status', 'waiting_theme');
-      row.set('lastActive', new Date());
-      await row.save();
+      try {
+        const message = createMessageObject(mondayMsg.message, mondayMsg.buttons);
+        await client.pushMessage(userId, message);
+
+        row.set('status', 'waiting_theme');
+        row.set('lastActive', new Date());
+        await row.save();
+
+        sentCount++;
+        console.log(`✓ Sent Monday theme selection to user ${userId} (was: ${currentStatus})`);
+        results.push(`User ${userId}: Sent (was: ${currentStatus})`);
+      } catch (error) {
+        errorCount++;
+        console.error(`✗ Failed to send Monday theme to user ${userId}:`, error.message);
+        results.push(`User ${userId}: ERROR - ${error.message}`);
+      }
+    } else {
+      skippedCount++;
+      console.log(`✗ Skipped user ${userId} - status: ${currentStatus}, week: ${currentWeek} vs ${thisWeek}`);
+      results.push(`User ${userId}: Skipped (status: ${currentStatus}, week: ${currentWeek})`);
     }
   }
+
+  const summary = {
+    totalUsers,
+    sentCount,
+    skippedCount,
+    errorCount,
+    results
+  };
+
+  console.log('===== Monday Theme Selection Summary =====');
+  console.log(`Total users: ${totalUsers}`);
+  console.log(`Messages sent: ${sentCount}`);
+  console.log(`Users skipped: ${skippedCount}`);
+  console.log(`Errors: ${errorCount}`);
+  if (results.length > 0) {
+    console.log('Details:', results);
+  }
+  console.log('==========================================');
+
+  return summary;
 }
 
 async function sendDailyQuestionForUser(userId) {
