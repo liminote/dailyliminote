@@ -178,6 +178,19 @@ app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
   }
 });
 
+// 測試用 - 強制執行月度總結（忽略日期檢查）
+app.get('/cron/monthly-review-test', verifyCronSecret, async (req, res) => {
+  console.log('TEST endpoint triggered: /cron/monthly-review-test');
+  try {
+    await doc.loadInfo();
+    await sendMonthlyReview();
+    res.status(200).json({ success: true, message: 'Monthly review test completed' });
+  } catch (err) {
+    console.error('Error in /cron/monthly-review-test:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // 標準的 Webhook 處理器
 app.post('/webhook', line.middleware(lineConfig), (req, res) => {
   if (!req.body.events || req.body.events.length === 0) {
