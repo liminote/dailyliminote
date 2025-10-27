@@ -1004,6 +1004,9 @@ async function generateMonthlyAiInsight(userId) {
   const systemPrompt = systemPromptMsg ? systemPromptMsg.message : "你是一個溫暖的夥伴，請總結使用者的紀錄。";
 
   try {
+    console.log('Calling OpenAI API for monthly insight...');
+    console.log(`Prompt length: ${promptText.length} characters`);
+
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -1011,9 +1014,16 @@ async function generateMonthlyAiInsight(userId) {
         { "role": "user", "content": promptText }
       ],
     });
+
+    console.log('OpenAI API call successful');
     return completion.choices[0].message.content;
   } catch (error) {
-    console.error("Error calling OpenAI API for monthly insight:", error);
+    console.error("Error calling OpenAI API for monthly insight:");
+    console.error("Error name:", error.name);
+    console.error("Error message:", error.message);
+    console.error("Error status:", error.status);
+    console.error("Full error:", JSON.stringify(error, null, 2));
+
     const msg = await getMessage('AI_ERROR_MONTHLY');
     const fallbackMsg = await getMessage('GENERIC_ERROR');
     return msg ? msg.message : "抱歉，月份 AI 總結功能暫時出了點問題。";
