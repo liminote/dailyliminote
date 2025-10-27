@@ -762,6 +762,7 @@ async function sendSaturdayReview() {
 
 async function sendMonthlyReview() {
   const userSheet = doc.sheetsByTitle['Users'];
+  const insightsSheet = doc.sheetsByTitle['MonthlyInsights'];
   const allUsers = await userSheet.getRows();
 
   for (const userRow of allUsers) {
@@ -771,7 +772,22 @@ async function sendMonthlyReview() {
     if (hasEnoughData) {
       console.log(`Generating monthly insight for user ${userId}`);
       const insightText = await generateMonthlyAiInsight(userId);
+
+      // 發送給使用者
       await client.pushMessage(userId, { type: 'text', text: insightText });
+
+      // 保存到 MonthlyInsights Sheet
+      const now = new Date();
+      const monthString = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      await insightsSheet.addRow({
+        InsightID: 'I' + now.getTime(),
+        UserID: userId,
+        Month: monthString,
+        AIInsight: insightText,
+        CreatedAt: now
+      });
+
+      console.log(`✓ Saved monthly insight for user ${userId} to MonthlyInsights sheet (Month: ${monthString})`);
     } else {
       console.log(`Skipping monthly insight for user ${userId}, not enough data.`);
     }
@@ -827,17 +843,20 @@ async function checkTodayAnswer(userId) {
 async function hasEnoughMonthlyData(userId) {
   const answerSheet = doc.sheetsByTitle['Answers'];
   const allAnswers = await answerSheet.getRows();
-  const currentMonth = new Date().getMonth();
+  const now = new Date();
+  const currentMonth = now.getMonth();
+  const currentYear = now.getFullYear();
 
   const monthlyAnswers = allAnswers.filter(row => {
     if (row.get('userId') !== userId) return false;
     const answerDate = new Date(row.get('timestamp'));
-    return answerDate.getMonth() === currentMonth;
+    return answerDate.getMonth() === currentMonth && answerDate.getFullYear() === currentYear;
   });
 
   if (monthlyAnswers.length === 0) return false;
   const uniqueWeeks = new Set(monthlyAnswers.map(row => row.get('week')));
-  return uniqueWeeks.size > 1;
+  // 至少要有兩週以上的內容才產生 AI 總結
+  return uniqueWeeks.size >= 2;
 }
 
 async function getWeeklyAnswerRows(userId) {
@@ -919,12 +938,14 @@ async function generateAiInsight(userId) {
 async function generateMonthlyAiInsight(userId) {
   const answerSheet = doc.sheetsByTitle['Answers'];
   const allAnswers = await answerSheet.getRows();
-  const currentMonth = new Date().getMonth();
+  const now = new Date();
+  const currentMonth = now.getMonth();
+  const currentYear = now.getFullYear();
 
   const monthlyAnswers = allAnswers.filter(row => {
     if (row.get('userId') !== userId) return false;
     const answerDate = new Date(row.get('timestamp'));
-    return answerDate.getMonth() === currentMonth;
+    return answerDate.getMonth() === currentMonth && answerDate.getFullYear() === currentYear;
   });
 
   if (monthlyAnswers.length === 0) {
