@@ -135,7 +135,6 @@ app.get('/cron/daily-question', verifyCronSecret, async (req, res) => {
       executionTime: `${executionTime}ms`,
       ...responseResult
     });
-    });
   } catch (err) {
     const executionTime = Date.now() - startTime;
     console.error('Error in /cron/daily-question:', err);
