@@ -77,14 +77,6 @@ function verifyCronSecret(req, res, next) {
   const secret = req.query.secret || req.headers['x-cron-secret'];
   const expectedSecret = process.env.CRON_SECRET;
 
-  // --- 新增的除錯程式碼 ---
-  console.log("--- DEBUGGING CRON SECRET ---");
-  console.log(`Received Secret: '${secret}' (Length: ${secret ? secret.length : 0})`);
-  console.log(`Expected Secret: '${expectedSecret}' (Length: ${expectedSecret ? expectedSecret.length : 0})`);
-  console.log(`Are they identical? (secret === expectedSecret): ${secret === expectedSecret}`);
-  console.log("-----------------------------");
-  // --- 除錯結束 ---
-
   if (!expectedSecret) {
     console.warn('CRON_SECRET not set in environment variables');
     return res.status(500).json({ error: 'CRON_SECRET not configured' });
