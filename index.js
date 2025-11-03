@@ -171,8 +171,8 @@ app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
     // 檢查明天是否為該月第一天
     if (tomorrow.getDate() === 1) {
       await doc.loadInfo();
-      await sendMonthlyReview();
-      res.status(200).json({ success: true, message: 'Monthly review sent' });
+      sendMonthlyReview(); // 不等待，讓它在背景執行
+      res.status(200).json({ success: true, message: 'Monthly review process started' });
     } else {
       res.status(200).json({ success: true, message: 'Not last day of month, skipped' });
     }
@@ -187,8 +187,8 @@ app.get('/cron/monthly-review-test', verifyCronSecret, async (req, res) => {
   console.log('TEST endpoint triggered: /cron/monthly-review-test');
   try {
     await doc.loadInfo();
-    await sendMonthlyReview();
-    res.status(200).json({ success: true, message: 'Monthly review test completed' });
+    sendMonthlyReview(); // 不等待，讓它在背景執行
+    res.status(200).json({ success: true, message: 'Monthly review test process started' });
   } catch (err) {
     console.error('Error in /cron/monthly-review-test:', err);
     res.status(500).json({ success: false, error: err.message });
