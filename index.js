@@ -96,10 +96,12 @@ app.get('/cron/monday-theme', verifyCronSecret, async (req, res) => {
   try {
     await doc.loadInfo();
     const summary = await sendMondayThemeSelection();
+    // 從 summary 中解構，將詳細的 results 陣列排除，只保留統計數字
+    const { results, ...responseSummary } = summary;
     res.status(200).json({
       success: true,
       message: 'Monday theme selection completed',
-      summary: summary
+      summary: responseSummary
     });
   } catch (err) {
     console.error('Error in /cron/monday-theme:', err);
@@ -125,11 +127,14 @@ app.get('/cron/daily-question', verifyCronSecret, async (req, res) => {
     console.log('Daily question execution completed:', result);
     console.log(`Execution time: ${executionTime}ms`);
 
+    // 從 result 中解構，將詳細的 skippedReasons 陣列排除，只保留統計數字
+    const { skippedReasons, ...responseResult } = result;
     res.status(200).json({
       success: true,
       message: 'Daily questions sent',
       executionTime: `${executionTime}ms`,
-      ...result
+      ...responseResult
+    });
     });
   } catch (err) {
     const executionTime = Date.now() - startTime;
