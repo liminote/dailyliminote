@@ -15,9 +15,15 @@ const lineConfig = {
   channelSecret: process.env.CHANNEL_SECRET,
 };
 
+// 安全地處理 Google Private Key（避免 undefined 錯誤）
+const googlePrivateKey = process.env.GOOGLE_PRIVATE_KEY;
+if (!googlePrivateKey) {
+  console.error('WARNING: GOOGLE_PRIVATE_KEY environment variable is not set');
+}
+
 const serviceAccountAuth = new JWT({
   email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-  key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+  key: googlePrivateKey ? googlePrivateKey.replace(/\\n/g, '\n') : '',
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
@@ -31,42 +37,126 @@ const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
 const client = new line.Client(lineConfig);
 const app = express();
 
+// Express 中間件
+app.use(express.json());
+
+// 請求超時處理（30秒）
+app.use((req, res, next) => {
+  req.setTimeout(30000, () => {
+    console.error(`Request timeout: ${req.method} ${req.path}`);
+    if (!res.headersSent) {
+      res.status(504).json({ error: 'Request timeout' });
+    }
+  });
+  next();
+});
+
+// 全局錯誤處理
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  if (!res.headersSent) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// 處理未捕獲的異常
+process.on('uncaughtException', (err) => {
+  console.error('========================================');
+  console.error('CRITICAL: Uncaught Exception detected!');
+  console.error('Time:', new Date().toISOString());
+  console.error('Error:', err);
+  console.error('Stack:', err.stack);
+  console.error('========================================');
+  // 不要立即退出，讓服務繼續運行，但記錄詳細錯誤
+  // 如果錯誤太嚴重，Render 會自動重啟服務
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('========================================');
+  console.error('CRITICAL: Unhandled Rejection detected!');
+  console.error('Time:', new Date().toISOString());
+  console.error('Promise:', promise);
+  console.error('Reason:', reason);
+  if (reason instanceof Error) {
+    console.error('Stack:', reason.stack);
+  }
+  console.error('========================================');
+  // 不要立即退出，讓服務繼續運行，但記錄詳細錯誤
+});
+
+// 監聽進程退出事件（用於診斷）
+process.on('exit', (code) => {
+  console.error('========================================');
+  console.error('Process exiting with code:', code);
+  console.error('Time:', new Date().toISOString());
+  console.error('========================================');
+});
+
+// 監聽警告
+process.on('warning', (warning) => {
+  console.warn('Process warning:', warning);
+  console.warn('Stack:', warning.stack);
+});
+
 // --- 2. Webhook & 測試路徑 ---
 
 app.get('/', (req, res) => {
   // 這個路徑主要用於 Uptime Robot 保持服務喚醒
+  const now = new Date();
+  console.log(`[${now.toISOString()}] Health check ping from Uptime Robot`);
   res.status(200).send('OK');
 });
 
-// 健康檢查端點 - 包含預熱功能
+// 健康檢查端點 - 快速響應，避免超時
+// 注意：Render 健康檢查只等待 5 秒，所以這個端點必須快速響應
 app.get('/health', async (req, res) => {
-  try {
-    const startTime = Date.now();
+  const startTime = Date.now();
+  const now = new Date();
+  
+  // 快速響應基本狀態（不執行耗時的 API 調用）
+  // 如果已經載入過 spreadsheet，顯示標題；否則只顯示基本狀態
+  const basicHealth = {
+    status: 'healthy',
+    timestamp: now.toISOString(),
+    localTime: now.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }),
+    serverTime: now.toLocaleString(),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    tzOffset: now.getTimezoneOffset(),
+    uptime: process.uptime(),
+    responseTime: `${Date.now() - startTime}ms`,
+    spreadsheet: doc.title || 'not loaded yet'
+  };
 
-    // 預熱：載入 Google Spreadsheet 連線
-    await doc.loadInfo();
-
-    const loadTime = Date.now() - startTime;
-    const now = new Date();
-
-    res.status(200).json({
-      status: 'healthy',
-      timestamp: now.toISOString(),
-      localTime: now.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }),
-      serverTime: now.toLocaleString(),
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      tzOffset: now.getTimezoneOffset(),
-      uptime: process.uptime(),
-      loadTime: `${loadTime}ms`,
-      spreadsheet: doc.title || 'connected'
-    });
-  } catch (err) {
-    console.error('Health check failed:', err);
-    res.status(503).json({
-      status: 'unhealthy',
-      error: err.message,
-      timestamp: new Date().toISOString()
-    });
+  // 如果請求包含 ?full=true，才執行完整的健康檢查（包括 API 調用）
+  if (req.query.full === 'true') {
+    try {
+      const apiStartTime = Date.now();
+      await Promise.race([
+        doc.loadInfo(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Spreadsheet load timeout')), 3000)
+        )
+      ]);
+      const apiLoadTime = Date.now() - apiStartTime;
+      
+      res.status(200).json({
+        ...basicHealth,
+        spreadsheet: doc.title || 'connected',
+        apiLoadTime: `${apiLoadTime}ms`,
+        fullCheck: true
+      });
+    } catch (err) {
+      // 即使 API 調用失敗，也返回基本健康狀態（服務本身是健康的）
+      console.error('Health check API call failed:', err);
+      res.status(200).json({
+        ...basicHealth,
+        apiError: err.message,
+        fullCheck: true
+      });
+    }
+  } else {
+    // 快速響應，不執行 API 調用
+    res.status(200).json(basicHealth);
   }
 });
 
@@ -171,7 +261,10 @@ app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
     // 檢查明天是否為該月第一天
     if (tomorrow.getDate() === 1) {
       await doc.loadInfo();
-      sendMonthlyReview(); // 不等待，讓它在背景執行
+      // 不等待，讓它在背景執行，但必須捕獲錯誤避免未處理的 Promise rejection
+      sendMonthlyReview().catch(err => {
+        console.error('Error in background sendMonthlyReview:', err);
+      });
       res.status(200).json({ success: true, message: 'Monthly review process started' });
     } else {
       res.status(200).json({ success: true, message: 'Not last day of month, skipped' });
@@ -187,7 +280,10 @@ app.get('/cron/monthly-review-test', verifyCronSecret, async (req, res) => {
   console.log('TEST endpoint triggered: /cron/monthly-review-test');
   try {
     await doc.loadInfo();
-    sendMonthlyReview(); // 不等待，讓它在背景執行
+    // 不等待，讓它在背景執行，但必須捕獲錯誤避免未處理的 Promise rejection
+    sendMonthlyReview().catch(err => {
+      console.error('Error in background sendMonthlyReview (test):', err);
+    });
     res.status(200).json({ success: true, message: 'Monthly review test process started' });
   } catch (err) {
     console.error('Error in /cron/monthly-review-test:', err);
@@ -284,11 +380,21 @@ async function handleEvent(event) {
 const THEME_MAP = { 'SELF': '自己', 'CREATION': '創作', 'FAMILY': '家庭' };
 
 async function replyWithText(replyToken, messageId, fallbackId = 'GENERIC_ERROR') {
-  let msg = await getMessage(messageId);
-  if (!msg) {
-    msg = await getMessage(fallbackId);
+  try {
+    let msg = await getMessage(messageId);
+    if (!msg) {
+      msg = await getMessage(fallbackId);
+    }
+    await client.replyMessage(replyToken, { type: 'text', text: msg ? msg.message : '系統發生錯誤' });
+  } catch (error) {
+    console.error(`Error in replyWithText (messageId: ${messageId}):`, error);
+    // 嘗試發送一個簡單的錯誤訊息
+    try {
+      await client.replyMessage(replyToken, { type: 'text', text: '系統暫時無法處理您的請求，請稍後再試。' });
+    } catch (replyError) {
+      console.error('Failed to send error message:', replyError);
+    }
   }
-  await client.replyMessage(replyToken, { type: 'text', text: msg ? msg.message : '系統發生錯誤' });
 }
 
 function createMessageObject(text, buttons) {
@@ -691,18 +797,23 @@ async function sendDailyQuestionForUser(userId) {
     messageText += `關於 ${themeChinese}：\n\n${question.question}`;
   }
 
-  await client.pushMessage(userId, { type: 'text', text: messageText });
+  try {
+    await client.pushMessage(userId, { type: 'text', text: messageText });
 
-  const oldStatus = row.get('status');
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] sendDailyQuestionForUser: Status change for user ${userId}: ${oldStatus} -> waiting_answer`);
+    const oldStatus = row.get('status');
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] sendDailyQuestionForUser: Status change for user ${userId}: ${oldStatus} -> waiting_answer`);
 
-  row.set('status', 'waiting_answer');
-  row.set('lastQuestionId', question.questionId);
-  row.set('lastActive', new Date());
-  await row.save();
+    row.set('status', 'waiting_answer');
+    row.set('lastQuestionId', question.questionId);
+    row.set('lastActive', new Date());
+    await row.save();
 
-  return { sent: true, reason: 'Success' };
+    return { sent: true, reason: 'Success' };
+  } catch (error) {
+    console.error(`Error sending daily question to user ${userId}:`, error);
+    return { sent: false, reason: `Failed to send message: ${error.message}` };
+  }
 }
 
 async function sendDailyQuestion() {
@@ -760,76 +871,90 @@ async function sendSaturdayReview() {
     let noResponseWeek = Number(row.get('noResponseWeek')) || 0;
 
     if ((status === 'active' || status === 'waiting_answer') && theme) {
-      const responseDays = await countWeeklyResponses(userId, currentWeek);
-      const messageId = responseDays === 0 ? 'SATURDAY_NO_RESPONSE' : 'SATURDAY_START';
-      const saturdayMsg = await getMessage(messageId);
+      try {
+        const responseDays = await countWeeklyResponses(userId, currentWeek);
+        const messageId = responseDays === 0 ? 'SATURDAY_NO_RESPONSE' : 'SATURDAY_START';
+        const saturdayMsg = await getMessage(messageId);
 
-      if (saturdayMsg) {
-        const themeChinese = THEME_MAP[theme] || theme;
-        let messageText = saturdayMsg.message.replace('【主題】', themeChinese);
-        const message = createMessageObject(messageText, responseDays > 0 ? saturdayMsg.buttons : null);
-        await client.pushMessage(userId, message);
+        if (saturdayMsg) {
+          const themeChinese = THEME_MAP[theme] || theme;
+          let messageText = saturdayMsg.message.replace('【主題】', themeChinese);
+          const message = createMessageObject(messageText, responseDays > 0 ? saturdayMsg.buttons : null);
+          await client.pushMessage(userId, message);
+        }
+
+        row.set('noResponseWeek', responseDays === 0 ? noResponseWeek + 1 : 0);
+        await row.save();
+      } catch (error) {
+        console.error(`Error sending Saturday review to user ${userId}:`, error);
+        // 繼續處理下一個用戶，不要因為一個用戶失敗而停止整個流程
       }
-
-      row.set('noResponseWeek', responseDays === 0 ? noResponseWeek + 1 : 0);
-      await row.save();
     }
   }
 }
 
 async function sendMonthlyReview() {
-  const userSheet = doc.sheetsByTitle['Users'];
-  const insightsSheet = doc.sheetsByTitle['MonthlyInsights'];
+  try {
+    const userSheet = doc.sheetsByTitle['Users'];
+    const insightsSheet = doc.sheetsByTitle['MonthlyInsights'];
 
-  if (!insightsSheet) {
-    console.error('MonthlyInsights sheet not found in spreadsheet');
-    throw new Error('MonthlyInsights sheet not found');
-  }
-
-  const allUsers = await userSheet.getRows();
-  console.log(`Found ${allUsers.length} users to check`);
-
-  let sentCount = 0;
-  let skippedCount = 0;
-  let errorCount = 0;
-
-  for (const userRow of allUsers) {
-    const userId = userRow.get('userId');
-
-    try {
-      const hasEnoughData = await hasEnoughMonthlyData(userId);
-
-      if (hasEnoughData) {
-        console.log(`Generating monthly insight for user ${userId}`);
-        const insightText = await generateMonthlyAiInsight(userId);
-
-        // 發送給使用者
-        await client.pushMessage(userId, { type: 'text', text: insightText });
-
-        // 保存到 MonthlyInsights Sheet
-        const now = new Date();
-        const monthString = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-        await insightsSheet.addRow({
-          InsightID: 'I' + now.getTime(),
-          UserID: userId,
-          Month: monthString,
-          AIInsight: insightText,
-          CreatedAt: now
-        });
-
-        sentCount++;
-        console.log(`✓ Saved monthly insight for user ${userId} to MonthlyInsights sheet (Month: ${monthString})`);
-      } else {
-        skippedCount++;
-        console.log(`Skipping monthly insight for user ${userId}, not enough data.`);
-      }
-    } catch (error) {
-      errorCount++;
-      console.error(`Error processing user ${userId}:`, error.message);
+    if (!insightsSheet) {
+      console.error('MonthlyInsights sheet not found in spreadsheet');
+      // 不要 throw，而是返回錯誤，避免導致未處理的異常
+      console.error('Skipping monthly review due to missing MonthlyInsights sheet');
+      return;
     }
-  }
 
-  console.log(`Monthly review summary: ${sentCount} sent, ${skippedCount} skipped, ${errorCount} errors`);
+    const allUsers = await userSheet.getRows();
+    console.log(`Found ${allUsers.length} users to check`);
+
+    let sentCount = 0;
+    let skippedCount = 0;
+    let errorCount = 0;
+
+    for (const userRow of allUsers) {
+      const userId = userRow.get('userId');
+
+      try {
+        const hasEnoughData = await hasEnoughMonthlyData(userId);
+
+        if (hasEnoughData) {
+          console.log(`Generating monthly insight for user ${userId}`);
+          const insightText = await generateMonthlyAiInsight(userId);
+
+          // 發送給使用者
+          await client.pushMessage(userId, { type: 'text', text: insightText });
+
+          // 保存到 MonthlyInsights Sheet
+          const now = new Date();
+          const monthString = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+          await insightsSheet.addRow({
+            InsightID: 'I' + now.getTime(),
+            UserID: userId,
+            Month: monthString,
+            AIInsight: insightText,
+            CreatedAt: now
+          });
+
+          sentCount++;
+          console.log(`✓ Saved monthly insight for user ${userId} to MonthlyInsights sheet (Month: ${monthString})`);
+        } else {
+          skippedCount++;
+          console.log(`Skipping monthly insight for user ${userId}, not enough data.`);
+        }
+      } catch (error) {
+        errorCount++;
+        console.error(`Error processing user ${userId}:`, error.message);
+        console.error('Error stack:', error.stack);
+      }
+    }
+
+    console.log(`Monthly review summary: ${sentCount} sent, ${skippedCount} skipped, ${errorCount} errors`);
+  } catch (error) {
+    console.error('Critical error in sendMonthlyReview:', error);
+    console.error('Error stack:', error.stack);
+    // 不要 throw，避免導致未處理的異常
+  }
 }
 
 // --- 7. 輔助工具函式 ---
@@ -1068,6 +1193,42 @@ function getCurrentDayString() {
 
 // --- 8. 伺服器啟動 ---
 const port = process.env.PORT || 3000;
+
+// 啟動前檢查關鍵環境變數
+const requiredEnvVars = ['CHANNEL_ACCESS_TOKEN', 'CHANNEL_SECRET', 'GOOGLE_SERVICE_ACCOUNT_EMAIL', 'GOOGLE_PRIVATE_KEY'];
+const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
+
+if (missingEnvVars.length > 0) {
+  console.warn('WARNING: Missing environment variables:', missingEnvVars.join(', '));
+  console.warn('Service may not function correctly without these variables.');
+}
+
 app.listen(port, '0.0.0.0', () => {
-  console.log(`listening on ${port}`);
+  console.log(`========================================`);
+  console.log(`隙音 LINE Bot 服務已啟動`);
+  console.log(`Port: ${port}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`Start Time: ${new Date().toISOString()}`);
+  console.log(`Node Version: ${process.version}`);
+  const memUsage = process.memoryUsage();
+  console.log(`Memory: ${Math.round(memUsage.heapUsed / 1024 / 1024)}MB / ${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`);
+  console.log(`========================================`);
+}).on('error', (err) => {
+  console.error('========================================');
+  console.error('CRITICAL: Failed to start server!');
+  console.error('Time:', new Date().toISOString());
+  console.error('Error:', err);
+  console.error('Stack:', err.stack);
+  console.error('========================================');
+  // 只有在啟動失敗時才退出，這是合理的
+  process.exit(1);
 });
+
+// 定期記錄服務狀態（每小時一次），幫助診斷問題
+setInterval(() => {
+  const memUsage = process.memoryUsage();
+  console.log(`[${new Date().toISOString()}] Service Status Check:`);
+  console.log(`  Uptime: ${Math.round(process.uptime())}s (${Math.round(process.uptime() / 3600)}h)`);
+  console.log(`  Memory: ${Math.round(memUsage.heapUsed / 1024 / 1024)}MB / ${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`);
+  console.log(`  RSS: ${Math.round(memUsage.rss / 1024 / 1024)}MB`);
+}, 3600000); // 每小時記錄一次
