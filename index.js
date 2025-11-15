@@ -34,6 +34,40 @@ const openai = new OpenAI({
 const SPREADSHEET_ID = '1TMyXHW2BaYJ3l8p1EdCQfb9Vhx_fJUrAZAEVOSBiom0';
 const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
 
+// 安全的 loadInfo 包裝函數，帶重試機制和詳細錯誤處理
+async function safeLoadInfo(maxRetries = 3, timeout = 10000) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[safeLoadInfo] Attempt ${attempt}/${maxRetries} to load spreadsheet info`);
+      await Promise.race([
+        doc.loadInfo(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error(`Spreadsheet load timeout after ${timeout}ms`)), timeout)
+        )
+      ]);
+      console.log(`[safeLoadInfo] Successfully loaded spreadsheet: ${doc.title}`);
+      return true;
+    } catch (error) {
+      console.error(`[safeLoadInfo] Attempt ${attempt} failed:`, error.message);
+      if (error.response) {
+        console.error(`[safeLoadInfo] API Response Status: ${error.response.status}`);
+        console.error(`[safeLoadInfo] API Response Data:`, JSON.stringify(error.response.data, null, 2));
+      }
+      
+      // 如果是最後一次嘗試，拋出錯誤
+      if (attempt === maxRetries) {
+        console.error(`[safeLoadInfo] All ${maxRetries} attempts failed`);
+        throw error;
+      }
+      
+      // 等待後重試（指數退避）
+      const waitTime = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+      console.log(`[safeLoadInfo] Waiting ${waitTime}ms before retry...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+  }
+}
+
 const client = new line.Client(lineConfig);
 const app = express();
 
@@ -131,12 +165,7 @@ app.get('/health', async (req, res) => {
   if (req.query.full === 'true') {
     try {
       const apiStartTime = Date.now();
-      await Promise.race([
-        doc.loadInfo(),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Spreadsheet load timeout')), 3000)
-        )
-      ]);
+      await safeLoadInfo(1, 3000); // 健康檢查只嘗試一次，3秒超時
       const apiLoadTime = Date.now() - apiStartTime;
       
       res.status(200).json({
@@ -147,7 +176,7 @@ app.get('/health', async (req, res) => {
       });
     } catch (err) {
       // 即使 API 調用失敗，也返回基本健康狀態（服務本身是健康的）
-      console.error('Health check API call failed:', err);
+      console.error('Health check API call failed:', err.message);
       res.status(200).json({
         ...basicHealth,
         apiError: err.message,
@@ -184,7 +213,7 @@ function verifyCronSecret(req, res, next) {
 app.get('/cron/monday-theme', verifyCronSecret, async (req, res) => {
   console.log('CRON endpoint triggered: /cron/monday-theme');
   try {
-    await doc.loadInfo();
+    await safeLoadInfo();
     const summary = await sendMondayThemeSelection();
     // 從 summary 中解構，將詳細的 results 陣列排除，只保留統計數字
     const { results, ...responseSummary } = summary;
@@ -208,7 +237,7 @@ app.get('/cron/daily-question', verifyCronSecret, async (req, res) => {
     // 確保 Spreadsheet 已載入
     if (!doc.title) {
       console.log('Loading spreadsheet for the first time...');
-      await doc.loadInfo();
+      await safeLoadInfo();
     }
 
     const result = await sendDailyQuestion();
@@ -241,7 +270,7 @@ app.get('/cron/daily-question', verifyCronSecret, async (req, res) => {
 app.get('/cron/saturday-review', verifyCronSecret, async (req, res) => {
   console.log('CRON endpoint triggered: /cron/saturday-review');
   try {
-    await doc.loadInfo();
+    await safeLoadInfo();
     await sendSaturdayReview();
     res.status(200).json({ success: true, message: 'Saturday review sent' });
   } catch (err) {
@@ -260,7 +289,7 @@ app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
 
     // 檢查明天是否為該月第一天
     if (tomorrow.getDate() === 1) {
-      await doc.loadInfo();
+      await safeLoadInfo();
       // 不等待，讓它在背景執行，但必須捕獲錯誤避免未處理的 Promise rejection
       sendMonthlyReview().catch(err => {
         console.error('Error in background sendMonthlyReview:', err);
@@ -279,7 +308,7 @@ app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
 app.get('/cron/monthly-review-test', verifyCronSecret, async (req, res) => {
   console.log('TEST endpoint triggered: /cron/monthly-review-test');
   try {
-    await doc.loadInfo();
+    await safeLoadInfo();
     // 不等待，讓它在背景執行，但必須捕獲錯誤避免未處理的 Promise rejection
     sendMonthlyReview().catch(err => {
       console.error('Error in background sendMonthlyReview (test):', err);
@@ -313,7 +342,7 @@ async function handleEvent(event) {
   }
   
   try {
-    await doc.loadInfo();
+    await safeLoadInfo();
     if (event.type === 'message' && event.message.type === 'text') {
       await handleTextMessage(event);
     } else if (event.type === 'postback') {
@@ -321,6 +350,18 @@ async function handleEvent(event) {
     }
   } catch (err) {
     console.error('Error in handleEvent:', err);
+    // 即使 loadInfo 失敗，也嘗試處理事件（可能已經載入過）
+    if (doc.title) {
+      try {
+        if (event.type === 'message' && event.message.type === 'text') {
+          await handleTextMessage(event);
+        } else if (event.type === 'postback') {
+          await handlePostback(event);
+        }
+      } catch (retryErr) {
+        console.error('Error retrying handleEvent:', retryErr);
+      }
+    }
   }
   return Promise.resolve(null);
 }
