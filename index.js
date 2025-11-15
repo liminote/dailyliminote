@@ -149,6 +149,17 @@ app.get('/health', async (req, res) => {
   
   // 快速響應基本狀態（不執行耗時的 API 調用）
   // 如果已經載入過 spreadsheet，顯示標題；否則只顯示基本狀態
+  let spreadsheetTitle = 'not loaded yet';
+  try {
+    // 安全地檢查 title，如果沒有載入過會拋出錯誤
+    if (doc.title) {
+      spreadsheetTitle = doc.title;
+    }
+  } catch (e) {
+    // 如果還沒有載入，使用默認值
+    spreadsheetTitle = 'not loaded yet';
+  }
+  
   const basicHealth = {
     status: 'healthy',
     timestamp: now.toISOString(),
@@ -158,7 +169,7 @@ app.get('/health', async (req, res) => {
     tzOffset: now.getTimezoneOffset(),
     uptime: process.uptime(),
     responseTime: `${Date.now() - startTime}ms`,
-    spreadsheet: doc.title || 'not loaded yet'
+    spreadsheet: spreadsheetTitle
   };
 
   // 如果請求包含 ?full=true，才執行完整的健康檢查（包括 API 調用）
@@ -235,7 +246,15 @@ app.get('/cron/daily-question', verifyCronSecret, async (req, res) => {
 
   try {
     // 確保 Spreadsheet 已載入
-    if (!doc.title) {
+    let needsLoad = false;
+    try {
+      needsLoad = !doc.title;
+    } catch (e) {
+      // 如果訪問 title 拋出錯誤，說明還沒有載入
+      needsLoad = true;
+    }
+    
+    if (needsLoad) {
       console.log('Loading spreadsheet for the first time...');
       await safeLoadInfo();
     }
@@ -351,7 +370,15 @@ async function handleEvent(event) {
   } catch (err) {
     console.error('Error in handleEvent:', err);
     // 即使 loadInfo 失敗，也嘗試處理事件（可能已經載入過）
-    if (doc.title) {
+    let isLoaded = false;
+    try {
+      isLoaded = !!doc.title;
+    } catch (e) {
+      // 如果訪問 title 拋出錯誤，說明還沒有載入
+      isLoaded = false;
+    }
+    
+    if (isLoaded) {
       try {
         if (event.type === 'message' && event.message.type === 'text') {
           await handleTextMessage(event);
