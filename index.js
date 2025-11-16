@@ -300,7 +300,9 @@ app.get('/cron/saturday-review', verifyCronSecret, async (req, res) => {
 
 // 每月最後一天 22:00 - 發送月度總結
 app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
+  const startTime = Date.now();
   console.log('CRON endpoint triggered: /cron/monthly-review');
+  
   try {
     const today = new Date();
     const tomorrow = new Date(today);
@@ -308,18 +310,55 @@ app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
 
     // 檢查明天是否為該月第一天
     if (tomorrow.getDate() === 1) {
-      await safeLoadInfo();
-      // 不等待，讓它在背景執行，但必須捕獲錯誤避免未處理的 Promise rejection
-      sendMonthlyReview().catch(err => {
-        console.error('Error in background sendMonthlyReview:', err);
-      });
-      res.status(200).json({ success: true, message: 'Monthly review process started' });
+      console.log('Last day of month detected, starting monthly review process...');
+      
+      // 設置超時保護：如果 5 秒內無法載入，先返回響應
+      const loadPromise = safeLoadInfo();
+      const timeoutPromise = new Promise((resolve) => 
+        setTimeout(() => resolve('timeout'), 5000)
+      );
+      
+      const loadResult = await Promise.race([loadPromise, timeoutPromise]);
+      
+      if (loadResult === 'timeout') {
+        console.warn('safeLoadInfo timeout, starting monthly review in background anyway');
+        // 即使超時，也在背景執行（可能已經載入過）
+        sendMonthlyReview().catch(err => {
+          console.error('Error in background sendMonthlyReview (after timeout):', err);
+        });
+        res.status(200).json({ 
+          success: true, 
+          message: 'Monthly review process started (loadInfo timeout, running in background)',
+          warning: 'Spreadsheet load timeout, but process started'
+        });
+      } else {
+        // 成功載入，在背景執行
+        sendMonthlyReview().catch(err => {
+          console.error('Error in background sendMonthlyReview:', err);
+        });
+        res.status(200).json({ 
+          success: true, 
+          message: 'Monthly review process started',
+          executionTime: `${Date.now() - startTime}ms`
+        });
+      }
     } else {
-      res.status(200).json({ success: true, message: 'Not last day of month, skipped' });
+      res.status(200).json({ 
+        success: true, 
+        message: 'Not last day of month, skipped',
+        today: today.getDate(),
+        tomorrow: tomorrow.getDate()
+      });
     }
   } catch (err) {
+    const executionTime = Date.now() - startTime;
     console.error('Error in /cron/monthly-review:', err);
-    res.status(500).json({ success: false, error: err.message });
+    console.error(`Failed after ${executionTime}ms`);
+    res.status(500).json({ 
+      success: false, 
+      error: err.message,
+      executionTime: `${executionTime}ms`
+    });
   }
 });
 
