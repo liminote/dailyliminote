@@ -72,7 +72,12 @@ const client = new line.Client(lineConfig);
 const app = express();
 
 // Express 中間件
-app.use(express.json());
+app.use(express.json({
+  verify: (req, res, buf) => {
+    // LINE SDK 需要原始 body 來驗證簽章，避免被 JSON parser 轉成物件
+    req.rawBody = buf;
+  }
+}));
 
 // 請求超時處理（30秒）
 app.use((req, res, next) => {
@@ -380,34 +385,65 @@ app.get('/cron/monthly-review-test', verifyCronSecret, async (req, res) => {
 
 // 標準的 Webhook 處理器
 app.post('/webhook', line.middleware(lineConfig), (req, res) => {
+  const timestamp = new Date().toISOString();
+  console.log(`[Webhook] Received request at ${timestamp}, events count: ${req.body?.events?.length || 0}`);
+  
   if (!req.body.events || req.body.events.length === 0) {
+    console.log('[Webhook] No events, returning empty response');
     return res.json({});
   }
+  
+  // 記錄所有事件類型
+  req.body.events.forEach((event, index) => {
+    console.log(`[Webhook] Event ${index + 1}: type=${event.type}, sourceType=${event.source?.type}`);
+    if (event.type === 'postback') {
+      console.log(`[Webhook] Postback event data: ${event.postback?.data}`);
+    }
+  });
+  
   Promise
     .all(req.body.events.map(handleEvent))
-    .then((result) => res.json(result))
+    .then((result) => {
+      console.log(`[Webhook] Successfully processed ${result.length} events`);
+      res.json(result);
+    })
     .catch((err) => {
-      console.error(err);
-      res.status(500).end();
+      console.error('[Webhook] Error processing events:', err);
+      console.error('Error stack:', err.stack);
+      // 即使處理失敗，也要返回 200，避免 LINE 重試
+      res.status(200).json({});
     });
 });
 
 async function handleEvent(event) {
+  const eventType = event.type;
+  const userId = event.source?.userId || 'unknown';
+  
+  console.log(`[handleEvent] Processing event: type=${eventType}, userId=${userId}`);
+  
   // 我們只處理文字訊息和 postback 事件
   // 排除掉 LINE Verify Webhook 時發送的空事件
-  if (event.type !== 'message' && event.type !== 'postback') {
+  if (eventType !== 'message' && eventType !== 'postback') {
+    console.log(`[handleEvent] Skipping event type: ${eventType}`);
     return Promise.resolve(null);
   }
   
   try {
     await safeLoadInfo();
-    if (event.type === 'message' && event.message.type === 'text') {
+    if (eventType === 'message' && event.message?.type === 'text') {
+      console.log(`[handleEvent] Handling text message from user ${userId}`);
       await handleTextMessage(event);
-    } else if (event.type === 'postback') {
+    } else if (eventType === 'postback') {
+      console.log(`[handleEvent] Handling postback from user ${userId}`);
       await handlePostback(event);
+    } else {
+      console.warn(`[handleEvent] Unhandled event: type=${eventType}, messageType=${event.message?.type}`);
     }
+    console.log(`[handleEvent] Successfully processed event: type=${eventType}, userId=${userId}`);
   } catch (err) {
-    console.error('Error in handleEvent:', err);
+    console.error(`[handleEvent] Error processing event type=${eventType}, userId=${userId}:`, err);
+    console.error('Error stack:', err.stack);
+    
     // 即使 loadInfo 失敗，也嘗試處理事件（可能已經載入過）
     let isLoaded = false;
     try {
@@ -418,15 +454,20 @@ async function handleEvent(event) {
     }
     
     if (isLoaded) {
+      console.log(`[handleEvent] Retrying event processing (spreadsheet already loaded)`);
       try {
-        if (event.type === 'message' && event.message.type === 'text') {
+        if (eventType === 'message' && event.message?.type === 'text') {
           await handleTextMessage(event);
-        } else if (event.type === 'postback') {
+        } else if (eventType === 'postback') {
           await handlePostback(event);
         }
+        console.log(`[handleEvent] Retry successful for event type=${eventType}, userId=${userId}`);
       } catch (retryErr) {
-        console.error('Error retrying handleEvent:', retryErr);
+        console.error(`[handleEvent] Retry failed for event type=${eventType}, userId=${userId}:`, retryErr);
+        console.error('Retry error stack:', retryErr.stack);
       }
+    } else {
+      console.error(`[handleEvent] Cannot retry: spreadsheet not loaded`);
     }
   }
   return Promise.resolve(null);
@@ -507,17 +548,105 @@ async function replyWithText(replyToken, messageId, fallbackId = 'GENERIC_ERROR'
 function createMessageObject(text, buttons) {
   let message = { type: 'text', text: text };
   if (buttons && buttons.length > 0) {
+    // LINE buttons template 限制：最多 4 个按钮
+    const validButtons = buttons.slice(0, 4);
+    
+    // 验证并清理按钮数据
+    const cleanedButtons = validButtons.map((btn, index) => {
+      if (!btn || typeof btn !== 'object') {
+        console.warn(`Invalid button at index ${index}:`, btn);
+        return null;
+      }
+      
+      const label = btn.label ? String(btn.label).substring(0, 20) : '按鈕';
+      const data = btn.data ? String(btn.data).substring(0, 300) : '';
+      
+      // 验证 data 不为空（LINE 要求 postback data 必须有值）
+      if (!data) {
+        console.warn(`Button at index ${index} has empty data, using default:`, btn);
+        return { type: 'postback', label, data: `action=button_${index}` };
+      }
+      
+      return { type: 'postback', label, data };
+    }).filter(btn => btn !== null); // 移除无效按钮
+    
+    if (cleanedButtons.length === 0) {
+      console.warn('No valid buttons after cleaning, falling back to text message');
+      return { type: 'text', text: text };
+    }
+    
     message = {
       type: 'template',
       altText: text.substring(0, 400),
       template: {
         type: 'buttons',
         text: text.substring(0, 160),
-        actions: buttons.map(btn => ({ type: 'postback', label: btn.label.substring(0, 20), data: btn.data }))
+        actions: cleanedButtons
       }
     };
+    
+    // 如果按钮数量超过限制，记录警告
+    if (buttons.length > 4) {
+      console.warn(`Warning: Buttons count (${buttons.length}) exceeds LINE limit (4). Only first 4 buttons will be shown.`);
+    }
+    
+    // 记录按钮信息用于调试
+    console.log(`Created buttons template with ${cleanedButtons.length} buttons:`, 
+      cleanedButtons.map(btn => ({ label: btn.label, dataLength: btn.data.length })));
   }
   return message;
+}
+
+// 安全发送消息的辅助函数，带详细错误日志
+async function safeSendMessage(sendFn, message, context = '') {
+  try {
+    // 验证消息格式
+    if (!message) {
+      throw new Error('Message is null or undefined');
+    }
+    
+    // 如果是 template 消息，验证格式
+    if (message.type === 'template' && message.template) {
+      if (message.template.type === 'buttons') {
+        if (!message.template.actions || message.template.actions.length === 0) {
+          throw new Error('Buttons template has no actions');
+        }
+        // 验证每个 action
+        message.template.actions.forEach((action, index) => {
+          if (action.type === 'postback') {
+            if (!action.data || action.data.length === 0) {
+              throw new Error(`Postback action at index ${index} has empty data`);
+            }
+            if (action.data.length > 300) {
+              throw new Error(`Postback action at index ${index} data exceeds 300 characters: ${action.data.length}`);
+            }
+            if (!action.label || action.label.length === 0) {
+              throw new Error(`Postback action at index ${index} has empty label`);
+            }
+            if (action.label.length > 20) {
+              throw new Error(`Postback action at index ${index} label exceeds 20 characters: ${action.label.length}`);
+            }
+          }
+        });
+      }
+    }
+    
+    await sendFn(message);
+    if (context) {
+      console.log(`✓ Successfully sent message: ${context}`);
+    }
+  } catch (error) {
+    console.error(`✗ Failed to send message${context ? ` (${context})` : ''}:`, error.message);
+    console.error('Message object:', JSON.stringify(message, null, 2));
+    if (error.response) {
+      console.error('LINE API Error Response:', {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        data: error.response.data
+      });
+    }
+    throw error;
+  }
 }
 
 async function handleTextMessage(event) {
@@ -549,62 +678,158 @@ async function handlePostback(event) {
   const userId = event.source.userId;
   const data = event.postback.data;
   const replyToken = event.replyToken;
+  
+  console.log(`[handlePostback] Received postback from user ${userId}, data: ${data}`);
+  
+  // 安全解析 postback data
   const params = {};
-  data.split('&').forEach(pair => { const [key, value] = pair.split('='); params[key] = decodeURIComponent(value); });
+  try {
+    if (data && typeof data === 'string') {
+      data.split('&').forEach(pair => {
+        const [key, value] = pair.split('=');
+        if (key) {
+          params[key] = value ? decodeURIComponent(value) : '';
+        }
+      });
+    }
+  } catch (parseError) {
+    console.error(`[handlePostback] Error parsing postback data: ${data}`, parseError);
+    // 即使解析失败，也尝试回复用户
+    try {
+      await client.replyMessage(replyToken, { 
+        type: 'text', 
+        text: '抱歉，系統暫時無法處理您的請求，請稍後再試。' 
+      });
+    } catch (replyError) {
+      console.error(`[handlePostback] Failed to send error message:`, replyError);
+    }
+    return;
+  }
+
+  const action = params.action;
+  console.log(`[handlePostback] Parsed action: ${action}, params:`, params);
+
+  if (!action) {
+    console.warn(`[handlePostback] No action found in postback data: ${data}`);
+    try {
+      await client.replyMessage(replyToken, { 
+        type: 'text', 
+        text: '抱歉，無法識別您的操作，請重新嘗試。' 
+      });
+    } catch (replyError) {
+      console.error(`[handlePostback] Failed to send error message:`, replyError);
+    }
+    return;
+  }
 
   let msg;
   let text;
   let message;
 
-  switch (params.action) {
-    case 'start_now':
-    case 'start_week':
-      msg = await getMessage('START_READY');
-      text = msg ? msg.message : (await getMessage('START_READY_FALLBACK')).message;
-      message = createMessageObject(text, msg ? msg.buttons : null);
-      await client.replyMessage(replyToken, message);
-      await updateUserStatus(userId, 'waiting_theme');
-      break;
+  try {
+    switch (action) {
+      case 'start_now':
+      case 'start_week':
+        msg = await getMessage('START_READY');
+        text = msg ? msg.message : (await getMessage('START_READY_FALLBACK')).message;
+        message = createMessageObject(text, msg ? msg.buttons : null);
+        await safeSendMessage(
+          (msg) => client.replyMessage(replyToken, msg),
+          message,
+          `handlePostback: start_now/start_week for user ${userId}`
+        );
+        await updateUserStatus(userId, 'waiting_theme');
+        break;
 
-    case 'ready':
-      msg = await getMessage('THEME_SELECT');
-      text = msg ? msg.message : (await getMessage('THEME_SELECT_FALLBACK')).message;
-      message = createMessageObject(text, msg ? msg.buttons : null);
-      await client.replyMessage(replyToken, message);
-      break;
+      case 'ready':
+        msg = await getMessage('THEME_SELECT');
+        text = msg ? msg.message : (await getMessage('THEME_SELECT_FALLBACK')).message;
+        message = createMessageObject(text, msg ? msg.buttons : null);
+        await safeSendMessage(
+          (msg) => client.replyMessage(replyToken, msg),
+          message,
+          `handlePostback: ready for user ${userId}`
+        );
+        break;
 
-    case 'select_theme':
-      await handleThemeSelection(replyToken, userId, params.theme);
-      break;
+      case 'select_theme':
+        if (!params.theme) {
+          console.error(`[handlePostback] select_theme action missing theme parameter`);
+          await client.replyMessage(replyToken, { 
+            type: 'text', 
+            text: '抱歉，無法識別您選擇的主題，請重新選擇。' 
+          });
+          return;
+        }
+        await handleThemeSelection(replyToken, userId, params.theme);
+        break;
 
-    case 'start_question':
-      // 使用者點擊按鈕，直接為該使用者發送問題
-      await sendDailyQuestionForUser(userId);
-      // 這是一個 push message，所以不需要 replyToken
-      break;
+      case 'start_question':
+        // 使用者點擊按鈕，直接為該使用者發送問題
+        await sendDailyQuestionForUser(userId);
+        // 這是一個 push message，所以不需要 replyToken
+        // 但為了確保用戶知道操作已處理，可以發送一個確認消息
+        try {
+          await client.replyMessage(replyToken, { 
+            type: 'text', 
+            text: '好的，正在為您發送今天的問題...' 
+          });
+        } catch (replyError) {
+          // replyToken 可能已過期，這是正常的（因為 sendDailyQuestionForUser 可能需要時間）
+          console.warn(`[handlePostback] Could not send confirmation (replyToken may be expired):`, replyError.message);
+        }
+        break;
 
-    case 'how_to_play':
-      await replyWithText(replyToken, 'HOW_TO_PLAY', 'HOW_TO_PLAY_FALLBACK');
-      break;
+      case 'how_to_play':
+        await replyWithText(replyToken, 'HOW_TO_PLAY', 'HOW_TO_PLAY_FALLBACK');
+        break;
 
-    case 'later':
-      await replyWithText(replyToken, 'LATER', 'LATER_FALLBACK');
-      await updateUserStatus(userId, 'waiting_monday');
-      break;
+      case 'later':
+        await replyWithText(replyToken, 'LATER', 'LATER_FALLBACK');
+        await updateUserStatus(userId, 'waiting_monday');
+        break;
 
-    case 'show_record':
-      const recordsText = await getWeeklyRecords(userId);
-      await client.replyMessage(replyToken, { type: 'text', text: recordsText });
-      // 設定狀態為「週六回顧後」，等待使用者輸入
-      await updateUserStatus(userId, 'saturday_showed_record');
-      break;
+      case 'show_record':
+        const recordsText = await getWeeklyRecords(userId);
+        await client.replyMessage(replyToken, { type: 'text', text: recordsText });
+        // 設定狀態為「週六回顧後」，等待使用者輸入
+        await updateUserStatus(userId, 'saturday_showed_record');
+        break;
 
-    // AI 總結功能已移除
-    // case 'get_insight':
-    //   await client.replyMessage(replyToken, { type: 'text', text: '好的，正在為您產生 AI 總結，請稍候幾秒鐘...' });
-    //   const insightText = await generateAiInsight(userId);
-    //   await client.pushMessage(userId, { type: 'text', text: insightText });
-    //   break;
+      default:
+        console.warn(`[handlePostback] Unknown action: ${action}, data: ${data}`);
+        try {
+          await client.replyMessage(replyToken, { 
+            type: 'text', 
+            text: '抱歉，無法識別您的操作，請重新嘗試。' 
+          });
+        } catch (replyError) {
+          console.error(`[handlePostback] Failed to send error message:`, replyError);
+        }
+        break;
+
+      // AI 總結功能已移除
+      // case 'get_insight':
+      //   await client.replyMessage(replyToken, { type: 'text', text: '好的，正在為您產生 AI 總結，請稍候幾秒鐘...' });
+      //   const insightText = await generateAiInsight(userId);
+      //   await client.pushMessage(userId, { type: 'text', text: insightText });
+      //   break;
+    }
+    
+    console.log(`[handlePostback] Successfully processed action: ${action} for user ${userId}`);
+  } catch (error) {
+    console.error(`[handlePostback] Error processing postback action ${action} for user ${userId}:`, error);
+    console.error('Error stack:', error.stack);
+    
+    // 嘗試發送錯誤訊息給用戶
+    try {
+      await client.replyMessage(replyToken, { 
+        type: 'text', 
+        text: '抱歉，處理您的請求時發生錯誤，請稍後再試。' 
+      });
+    } catch (replyError) {
+      console.error(`[handlePostback] Failed to send error message to user:`, replyError);
+    }
   }
 }
 
@@ -632,7 +857,11 @@ async function handleThemeSelection(replyToken, userId, theme) {
   }
 
   const message = createMessageObject(text, buttons);
-  await client.replyMessage(replyToken, message);
+  await safeSendMessage(
+    (msg) => client.replyMessage(replyToken, msg),
+    message,
+    `handleThemeSelection: theme ${theme} for user ${userId}`
+  );
 }
 
 
@@ -642,7 +871,11 @@ async function sendWelcomeMessage(replyToken, userId) {
   const welcomeMsg = await getMessage(messageId);
   if (welcomeMsg) {
     const message = createMessageObject(welcomeMsg.message, welcomeMsg.buttons);
-    await client.replyMessage(replyToken, message);
+    await safeSendMessage(
+      (msg) => client.replyMessage(replyToken, msg),
+      message,
+      `sendWelcomeMessage: ${messageId} for user ${userId}`
+    );
     const status = (today === 1) ? 'waiting_theme' : 'waiting_monday';
     await updateUserStatus(userId, status);
   } else {
@@ -790,7 +1023,11 @@ async function sendMondayThemeSelection() {
     if (shouldSend) {
       try {
         const message = createMessageObject(mondayMsg.message, mondayMsg.buttons);
-        await client.pushMessage(userId, message);
+        await safeSendMessage(
+          (msg) => client.pushMessage(userId, msg),
+          message,
+          `sendMondayThemeSelection: user ${userId}`
+        );
 
         row.set('status', 'waiting_theme');
         row.set('lastActive', new Date());
@@ -987,7 +1224,11 @@ async function sendSaturdayReview() {
           const themeChinese = THEME_MAP[theme] || theme;
           let messageText = saturdayMsg.message.replace('【主題】', themeChinese);
           const message = createMessageObject(messageText, responseDays > 0 ? saturdayMsg.buttons : null);
-          await client.pushMessage(userId, message);
+          await safeSendMessage(
+            (msg) => client.pushMessage(userId, msg),
+            message,
+            `sendSaturdayReview: user ${userId}`
+          );
         }
 
         row.set('noResponseWeek', responseDays === 0 ? noResponseWeek + 1 : 0);
