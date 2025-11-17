@@ -1429,7 +1429,7 @@ async function generateAiInsight(userId) {
 
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         { "role": "system", "content": systemPrompt },
         { "role": "user", "content": promptText }
@@ -1485,7 +1485,7 @@ async function generateMonthlyAiInsight(userId) {
     console.log(`Prompt length: ${promptText.length} characters`);
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         { "role": "system", "content": systemPrompt },
         { "role": "user", "content": promptText }
