@@ -41,7 +41,7 @@ async function safeLoadInfo(maxRetries = 3, timeout = 10000) {
       console.log(`[safeLoadInfo] Attempt ${attempt}/${maxRetries} to load spreadsheet info`);
       await Promise.race([
         doc.loadInfo(),
-        new Promise((_, reject) => 
+        new Promise((_, reject) =>
           setTimeout(() => reject(new Error(`Spreadsheet load timeout after ${timeout}ms`)), timeout)
         )
       ]);
@@ -53,13 +53,13 @@ async function safeLoadInfo(maxRetries = 3, timeout = 10000) {
         console.error(`[safeLoadInfo] API Response Status: ${error.response.status}`);
         console.error(`[safeLoadInfo] API Response Data:`, JSON.stringify(error.response.data, null, 2));
       }
-      
+
       // 如果是最後一次嘗試，拋出錯誤
       if (attempt === maxRetries) {
         console.error(`[safeLoadInfo] All ${maxRetries} attempts failed`);
         throw error;
       }
-      
+
       // 等待後重試（指數退避）
       const waitTime = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
       console.log(`[safeLoadInfo] Waiting ${waitTime}ms before retry...`);
@@ -151,7 +151,7 @@ app.get('/', (req, res) => {
 app.get('/health', async (req, res) => {
   const startTime = Date.now();
   const now = new Date();
-  
+
   // 快速響應基本狀態（不執行耗時的 API 調用）
   // 如果已經載入過 spreadsheet，顯示標題；否則只顯示基本狀態
   let spreadsheetTitle = 'not loaded yet';
@@ -164,7 +164,7 @@ app.get('/health', async (req, res) => {
     // 如果還沒有載入，使用默認值
     spreadsheetTitle = 'not loaded yet';
   }
-  
+
   const basicHealth = {
     status: 'healthy',
     timestamp: now.toISOString(),
@@ -183,7 +183,7 @@ app.get('/health', async (req, res) => {
       const apiStartTime = Date.now();
       await safeLoadInfo(1, 3000); // 健康檢查只嘗試一次，3秒超時
       const apiLoadTime = Date.now() - apiStartTime;
-      
+
       res.status(200).json({
         ...basicHealth,
         spreadsheet: doc.title || 'connected',
@@ -258,7 +258,7 @@ app.get('/cron/daily-question', verifyCronSecret, async (req, res) => {
       // 如果訪問 title 拋出錯誤，說明還沒有載入
       needsLoad = true;
     }
-    
+
     if (needsLoad) {
       console.log('Loading spreadsheet for the first time...');
       await safeLoadInfo();
@@ -307,7 +307,7 @@ app.get('/cron/saturday-review', verifyCronSecret, async (req, res) => {
 app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
   const startTime = Date.now();
   console.log('CRON endpoint triggered: /cron/monthly-review');
-  
+
   try {
     const today = new Date();
     const tomorrow = new Date(today);
@@ -316,23 +316,23 @@ app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
     // 檢查明天是否為該月第一天
     if (tomorrow.getDate() === 1) {
       console.log('Last day of month detected, starting monthly review process...');
-      
+
       // 設置超時保護：如果 5 秒內無法載入，先返回響應
       const loadPromise = safeLoadInfo();
-      const timeoutPromise = new Promise((resolve) => 
+      const timeoutPromise = new Promise((resolve) =>
         setTimeout(() => resolve('timeout'), 5000)
       );
-      
+
       const loadResult = await Promise.race([loadPromise, timeoutPromise]);
-      
+
       if (loadResult === 'timeout') {
         console.warn('safeLoadInfo timeout, starting monthly review in background anyway');
         // 即使超時，也在背景執行（可能已經載入過）
         sendMonthlyReview().catch(err => {
           console.error('Error in background sendMonthlyReview (after timeout):', err);
         });
-        res.status(200).json({ 
-          success: true, 
+        res.status(200).json({
+          success: true,
           message: 'Monthly review process started (loadInfo timeout, running in background)',
           warning: 'Spreadsheet load timeout, but process started'
         });
@@ -341,15 +341,15 @@ app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
         sendMonthlyReview().catch(err => {
           console.error('Error in background sendMonthlyReview:', err);
         });
-        res.status(200).json({ 
-          success: true, 
+        res.status(200).json({
+          success: true,
           message: 'Monthly review process started',
           executionTime: `${Date.now() - startTime}ms`
         });
       }
     } else {
-      res.status(200).json({ 
-        success: true, 
+      res.status(200).json({
+        success: true,
         message: 'Not last day of month, skipped',
         today: today.getDate(),
         tomorrow: tomorrow.getDate()
@@ -359,8 +359,8 @@ app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
     const executionTime = Date.now() - startTime;
     console.error('Error in /cron/monthly-review:', err);
     console.error(`Failed after ${executionTime}ms`);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       error: err.message,
       executionTime: `${executionTime}ms`
     });
@@ -387,12 +387,12 @@ app.get('/cron/monthly-review-test', verifyCronSecret, async (req, res) => {
 app.post('/webhook', line.middleware(lineConfig), (req, res) => {
   const timestamp = new Date().toISOString();
   console.log(`[Webhook] Received request at ${timestamp}, events count: ${req.body?.events?.length || 0}`);
-  
+
   if (!req.body.events || req.body.events.length === 0) {
     console.log('[Webhook] No events, returning empty response');
     return res.json({});
   }
-  
+
   // 記錄所有事件類型
   req.body.events.forEach((event, index) => {
     console.log(`[Webhook] Event ${index + 1}: type=${event.type}, sourceType=${event.source?.type}`);
@@ -400,7 +400,7 @@ app.post('/webhook', line.middleware(lineConfig), (req, res) => {
       console.log(`[Webhook] Postback event data: ${event.postback?.data}`);
     }
   });
-  
+
   Promise
     .all(req.body.events.map(handleEvent))
     .then((result) => {
@@ -418,16 +418,16 @@ app.post('/webhook', line.middleware(lineConfig), (req, res) => {
 async function handleEvent(event) {
   const eventType = event.type;
   const userId = event.source?.userId || 'unknown';
-  
+
   console.log(`[handleEvent] Processing event: type=${eventType}, userId=${userId}`);
-  
+
   // 我們只處理文字訊息和 postback 事件
   // 排除掉 LINE Verify Webhook 時發送的空事件
   if (eventType !== 'message' && eventType !== 'postback') {
     console.log(`[handleEvent] Skipping event type: ${eventType}`);
     return Promise.resolve(null);
   }
-  
+
   try {
     await safeLoadInfo();
     if (eventType === 'message' && event.message?.type === 'text') {
@@ -443,7 +443,7 @@ async function handleEvent(event) {
   } catch (err) {
     console.error(`[handleEvent] Error processing event type=${eventType}, userId=${userId}:`, err);
     console.error('Error stack:', err.stack);
-    
+
     // 即使 loadInfo 失敗，也嘗試處理事件（可能已經載入過）
     let isLoaded = false;
     try {
@@ -452,7 +452,7 @@ async function handleEvent(event) {
       // 如果訪問 title 拋出錯誤，說明還沒有載入
       isLoaded = false;
     }
-    
+
     if (isLoaded) {
       console.log(`[handleEvent] Retrying event processing (spreadsheet already loaded)`);
       try {
@@ -550,31 +550,31 @@ function createMessageObject(text, buttons) {
   if (buttons && buttons.length > 0) {
     // LINE buttons template 限制：最多 4 个按钮
     const validButtons = buttons.slice(0, 4);
-    
+
     // 验证并清理按钮数据
     const cleanedButtons = validButtons.map((btn, index) => {
       if (!btn || typeof btn !== 'object') {
         console.warn(`Invalid button at index ${index}:`, btn);
         return null;
       }
-      
+
       const label = btn.label ? String(btn.label).substring(0, 20) : '按鈕';
       const data = btn.data ? String(btn.data).substring(0, 300) : '';
-      
+
       // 验证 data 不为空（LINE 要求 postback data 必须有值）
       if (!data) {
         console.warn(`Button at index ${index} has empty data, using default:`, btn);
         return { type: 'postback', label, data: `action=button_${index}` };
       }
-      
+
       return { type: 'postback', label, data };
     }).filter(btn => btn !== null); // 移除无效按钮
-    
+
     if (cleanedButtons.length === 0) {
       console.warn('No valid buttons after cleaning, falling back to text message');
       return { type: 'text', text: text };
     }
-    
+
     message = {
       type: 'template',
       altText: text.substring(0, 400),
@@ -584,14 +584,14 @@ function createMessageObject(text, buttons) {
         actions: cleanedButtons
       }
     };
-    
+
     // 如果按钮数量超过限制，记录警告
     if (buttons.length > 4) {
       console.warn(`Warning: Buttons count (${buttons.length}) exceeds LINE limit (4). Only first 4 buttons will be shown.`);
     }
-    
+
     // 记录按钮信息用于调试
-    console.log(`Created buttons template with ${cleanedButtons.length} buttons:`, 
+    console.log(`Created buttons template with ${cleanedButtons.length} buttons:`,
       cleanedButtons.map(btn => ({ label: btn.label, dataLength: btn.data.length })));
   }
   return message;
@@ -604,7 +604,7 @@ async function safeSendMessage(sendFn, message, context = '') {
     if (!message) {
       throw new Error('Message is null or undefined');
     }
-    
+
     // 如果是 template 消息，验证格式
     if (message.type === 'template' && message.template) {
       if (message.template.type === 'buttons') {
@@ -630,7 +630,7 @@ async function safeSendMessage(sendFn, message, context = '') {
         });
       }
     }
-    
+
     await sendFn(message);
     if (context) {
       console.log(`✓ Successfully sent message: ${context}`);
@@ -652,22 +652,29 @@ async function safeSendMessage(sendFn, message, context = '') {
 async function handleTextMessage(event) {
   const userId = event.source.userId;
   const replyToken = event.replyToken;
-  const userSheet = doc.sheetsByTitle['Users'];
-  let user = await getOrCreateUser(userId, userSheet);
 
-  if (!user.status || user.status === 'new' || user.status === 'idle' || user.status === 'waiting_monday') {
+  // 改用 getOrCreateUserRow 取得 Row 物件，以便後續操作
+  const userRow = await getOrCreateUserRow(userId);
+  const status = userRow.get('status');
+
+  if (!status || status === 'new' || status === 'idle' || status === 'waiting_monday') {
     await sendWelcomeMessage(replyToken, userId);
-  } else if (user.status === 'waiting_theme') {
+  } else if (status === 'waiting_theme') {
     await replyWithText(replyToken, 'PROMPT_THEME_CHOICE');
-  } else if (user.status === 'waiting_answer') {
-    await saveUserAnswer(userId, event.message.text);
+  } else if (status === 'waiting_answer') {
+    // 傳遞 userRow 物件，避免重複讀取資料庫
+    // saveUserAnswer 會寫入 Answer Sheet，並更新 userRow 記憶體中的狀態（不存檔）
+    await saveUserAnswer(userRow, event.message.text);
+
     await replyWithText(replyToken, 'HEARD');
-    await updateUserStatus(userId, 'active');
-  } else if (user.status === 'saturday_showed_record') {
+
+    // updateUserStatus 會更新狀態並執行 save()，將所有變更一次寫入
+    await updateUserStatus(userRow, 'active');
+  } else if (status === 'saturday_showed_record') {
     // 使用者在週六看過紀錄後，又發送了文字訊息
     await replyWithText(replyToken, 'SATURDAY_END');
-    await updateUserStatus(userId, 'active');
-  } else if (user.status === 'active') {
+    await updateUserStatus(userRow, 'active');
+  } else if (status === 'active') {
     await replyWithText(replyToken, 'ACK_ACTIVE');
   } else {
     await replyWithText(replyToken, 'FALLBACK_GENERAL');
@@ -678,9 +685,9 @@ async function handlePostback(event) {
   const userId = event.source.userId;
   const data = event.postback.data;
   const replyToken = event.replyToken;
-  
+
   console.log(`[handlePostback] Received postback from user ${userId}, data: ${data}`);
-  
+
   // 安全解析 postback data
   const params = {};
   try {
@@ -696,9 +703,9 @@ async function handlePostback(event) {
     console.error(`[handlePostback] Error parsing postback data: ${data}`, parseError);
     // 即使解析失败，也尝试回复用户
     try {
-      await client.replyMessage(replyToken, { 
-        type: 'text', 
-        text: '抱歉，系統暫時無法處理您的請求，請稍後再試。' 
+      await client.replyMessage(replyToken, {
+        type: 'text',
+        text: '抱歉，系統暫時無法處理您的請求，請稍後再試。'
       });
     } catch (replyError) {
       console.error(`[handlePostback] Failed to send error message:`, replyError);
@@ -712,9 +719,9 @@ async function handlePostback(event) {
   if (!action) {
     console.warn(`[handlePostback] No action found in postback data: ${data}`);
     try {
-      await client.replyMessage(replyToken, { 
-        type: 'text', 
-        text: '抱歉，無法識別您的操作，請重新嘗試。' 
+      await client.replyMessage(replyToken, {
+        type: 'text',
+        text: '抱歉，無法識別您的操作，請重新嘗試。'
       });
     } catch (replyError) {
       console.error(`[handlePostback] Failed to send error message:`, replyError);
@@ -755,9 +762,9 @@ async function handlePostback(event) {
       case 'select_theme':
         if (!params.theme) {
           console.error(`[handlePostback] select_theme action missing theme parameter`);
-          await client.replyMessage(replyToken, { 
-            type: 'text', 
-            text: '抱歉，無法識別您選擇的主題，請重新選擇。' 
+          await client.replyMessage(replyToken, {
+            type: 'text',
+            text: '抱歉，無法識別您選擇的主題，請重新選擇。'
           });
           return;
         }
@@ -770,9 +777,9 @@ async function handlePostback(event) {
         // 這是一個 push message，所以不需要 replyToken
         // 但為了確保用戶知道操作已處理，可以發送一個確認消息
         try {
-          await client.replyMessage(replyToken, { 
-            type: 'text', 
-            text: '好的，正在為您發送今天的問題...' 
+          await client.replyMessage(replyToken, {
+            type: 'text',
+            text: '好的，正在為您發送今天的問題...'
           });
         } catch (replyError) {
           // replyToken 可能已過期，這是正常的（因為 sendDailyQuestionForUser 可能需要時間）
@@ -799,9 +806,9 @@ async function handlePostback(event) {
       default:
         console.warn(`[handlePostback] Unknown action: ${action}, data: ${data}`);
         try {
-          await client.replyMessage(replyToken, { 
-            type: 'text', 
-            text: '抱歉，無法識別您的操作，請重新嘗試。' 
+          await client.replyMessage(replyToken, {
+            type: 'text',
+            text: '抱歉，無法識別您的操作，請重新嘗試。'
           });
         } catch (replyError) {
           console.error(`[handlePostback] Failed to send error message:`, replyError);
@@ -815,17 +822,17 @@ async function handlePostback(event) {
       //   await client.pushMessage(userId, { type: 'text', text: insightText });
       //   break;
     }
-    
+
     console.log(`[handlePostback] Successfully processed action: ${action} for user ${userId}`);
   } catch (error) {
     console.error(`[handlePostback] Error processing postback action ${action} for user ${userId}:`, error);
     console.error('Error stack:', error.stack);
-    
+
     // 嘗試發送錯誤訊息給用戶
     try {
-      await client.replyMessage(replyToken, { 
-        type: 'text', 
-        text: '抱歉，處理您的請求時發生錯誤，請稍後再試。' 
+      await client.replyMessage(replyToken, {
+        type: 'text',
+        text: '抱歉，處理您的請求時發生錯誤，請稍後再試。'
       });
     } catch (replyError) {
       console.error(`[handlePostback] Failed to send error message to user:`, replyError);
@@ -885,29 +892,45 @@ async function sendWelcomeMessage(replyToken, userId) {
 
 // --- 5. 資料庫操作函式 ---
 
-async function getOrCreateUser(userId, userSheet) {
-  const rows = await userSheet.getRows();
-  const userRow = rows.find(row => row.get('userId') === userId);
-  if (userRow) {
-    return userRow.toObject();
-  }
-  const now = new Date();
-  const newUserRow = await userSheet.addRow({ userId: userId, status: 'new', CreatedAt: now });
-  return newUserRow.toObject();
-}
-
-async function updateUserStatus(userId, status) {
+async function getOrCreateUserRow(userId) {
   const userSheet = doc.sheetsByTitle['Users'];
   const rows = await userSheet.getRows();
-  const userRow = rows.find(row => row.get('userId') === userId);
+  let userRow = rows.find(row => row.get('userId') === userId);
+  if (!userRow) {
+    const now = new Date();
+    userRow = await userSheet.addRow({ userId: userId, status: 'new', CreatedAt: now });
+  }
+  return userRow;
+}
+
+async function getOrCreateUser(userId, userSheet) {
+  // Wrapper for backward compatibility
+  const row = await getOrCreateUserRow(userId);
+  return row.toObject();
+}
+
+async function updateUserStatus(userOrId, status) {
+  let userRow;
+
+  if (typeof userOrId === 'string') {
+    const userSheet = doc.sheetsByTitle['Users'];
+    const rows = await userSheet.getRows();
+    userRow = rows.find(row => row.get('userId') === userOrId);
+  } else {
+    userRow = userOrId;
+  }
+
   if (userRow) {
     const oldStatus = userRow.get('status');
     const timestamp = new Date().toISOString();
+    const userId = userRow.get('userId');
     console.log(`[${timestamp}] Status change for user ${userId}: ${oldStatus} -> ${status}`);
 
     userRow.set('status', status);
     userRow.set('lastActive', new Date());
     await userRow.save();
+  } else {
+    console.warn(`[updateUserStatus] User not found: ${userOrId}`);
   }
 }
 
@@ -967,32 +990,38 @@ async function getQuestionById(questionId) {
   return null;
 }
 
-async function saveUserAnswer(userId, answer) {
-  const userSheet = doc.sheetsByTitle['Users'];
-  const user = await getOrCreateUser(userId, userSheet);
+async function saveUserAnswer(userRow, answer) {
+  const userId = userRow.get('userId');
+  const lastQuestionId = userRow.get('lastQuestionId');
 
-  if (!user.lastQuestionId) {
+  if (!lastQuestionId) {
     console.log(`User ${userId} answered without a pending question. Ignoring.`);
     return;
   }
 
-  const question = await getQuestionById(user.lastQuestionId);
+  const question = await getQuestionById(lastQuestionId);
   const dayOfWeek = getCurrentDayString();
 
   const answerSheet = doc.sheetsByTitle['Answers'];
+
   await answerSheet.addRow({
-    AnswerID: 'A' + new Date().getTime(), userId: userId, week: user.currentWeek,
-    theme: user.currentTheme, day: dayOfWeek, questionId: question ? question.questionId : 'N/A',
-    question: question ? question.question : 'N/A', answer: answer,
-    skipped: false, timestamp: new Date()
+    AnswerID: 'A' + new Date().getTime(),
+    userId: userId,
+    week: userRow.get('currentWeek'),
+    theme: userRow.get('currentTheme'),
+    day: dayOfWeek,
+    questionId: question ? question.questionId : 'N/A',
+    question: question ? question.question : 'N/A',
+    answer: answer,
+    skipped: false,
+    timestamp: new Date()
   });
 
-  const userRow = (await userSheet.getRows()).find(row => row.get('userId') === userId);
-  if (userRow) {
-    userRow.set('noResponseWeek', 0);
-    userRow.set('lastQuestionId', '');
-    await userRow.save();
-  }
+  // Update userRow in memory only. Save is deferred to updateUserStatus.
+  userRow.set('noResponseWeek', 0);
+  userRow.set('lastQuestionId', '');
+
+  console.log(`User ${userId} answer saved. User row updated in memory (not saved yet).`);
 }
 
 // --- 6. 定時任務完整邏輯 ---
@@ -1017,8 +1046,8 @@ async function sendMondayThemeSelection() {
 
     // 發送條件：waiting_monday, saturday_showed_record, 或 active 且週次不同
     const shouldSend = currentStatus === 'waiting_monday'
-                    || currentStatus === 'saturday_showed_record'
-                    || (currentStatus === 'active' && currentWeek !== thisWeek);
+      || currentStatus === 'saturday_showed_record'
+      || (currentStatus === 'active' && currentWeek !== thisWeek);
 
     if (shouldSend) {
       try {
