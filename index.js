@@ -866,12 +866,23 @@ async function handleThemeSelection(replyToken, userId, theme) {
     text += '\n\n問題將從下週一開始。';
   }
 
-  const message = createMessageObject(text, buttons);
+  // 先回覆確認訊息
   await safeSendMessage(
     (msg) => client.replyMessage(replyToken, msg),
-    message,
-    `handleThemeSelection: theme ${theme} for user ${userId}`
+    createMessageObject(text, confirmMsg ? confirmMsg.buttons : null),
+    `handleThemeSelection: confirm ${theme} for user ${userId}`
   );
+
+  // 選完主題後，直接發送當天的問題
+  console.log(`[handleThemeSelection] Theme selected, triggering daily question for user ${userId}`);
+  // 稍微延遲一下，讓使用者先看到確認訊息
+  setTimeout(async () => {
+    try {
+      await sendDailyQuestionForUser(userId);
+    } catch (err) {
+      console.error(`[handleThemeSelection] Failed to auto-send daily question:`, err);
+    }
+  }, 1000);
 }
 
 
