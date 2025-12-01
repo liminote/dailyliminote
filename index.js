@@ -858,31 +858,25 @@ async function handleThemeSelection(replyToken, userId, theme) {
     text = fallbackMsg ? fallbackMsg.message.replace('【主題】', themeChinese) : `收到。\n\n這週，我們一起關注「${themeChinese}」。`;
   }
 
-  const today = new Date().getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
-  let buttons = null;
-  if (today >= 1 && today <= 5) { // 如果是週一到週五
-    buttons = [{ "label": "開始回答今天問題", "data": "action=start_question" }];
-  } else {
-    text += '\n\n問題將從下週一開始。';
+  // 這裡的邏輯是：
+  // 如果 Google Sheet (Messages) 裡面的 CONFIRM_XXX 訊息有設定按鈕，就用 Sheet 裡的按鈕
+  // 如果沒有，且今天是週一到週五，就自動加上「開始回答今天問題」的按鈕
+  let buttons = confirmMsg ? confirmMsg.buttons : null;
+
+  if (!buttons || buttons.length === 0) {
+    const today = new Date().getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+    if (today >= 1 && today <= 5) { // 如果是週一到週五
+      buttons = [{ "label": "開始回答今天問題", "data": "action=start_question" }];
+    } else {
+      text += '\n\n問題將從下週一開始。';
+    }
   }
 
-  // 先回覆確認訊息
   await safeSendMessage(
     (msg) => client.replyMessage(replyToken, msg),
-    createMessageObject(text, confirmMsg ? confirmMsg.buttons : null),
+    createMessageObject(text, buttons),
     `handleThemeSelection: confirm ${theme} for user ${userId}`
   );
-
-  // 選完主題後，直接發送當天的問題
-  console.log(`[handleThemeSelection] Theme selected, triggering daily question for user ${userId}`);
-  // 稍微延遲一下，讓使用者先看到確認訊息
-  setTimeout(async () => {
-    try {
-      await sendDailyQuestionForUser(userId);
-    } catch (err) {
-      console.error(`[handleThemeSelection] Failed to auto-send daily question:`, err);
-    }
-  }, 1000);
 }
 
 
