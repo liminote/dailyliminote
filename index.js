@@ -368,18 +368,21 @@ app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
 });
 
 // 測試用 - 強制執行月度總結（忽略日期檢查）
+// 測試用 - 強制執行月度總結（忽略日期檢查）
 app.get('/cron/monthly-review-test', verifyCronSecret, async (req, res) => {
   console.log('TEST endpoint triggered: /cron/monthly-review-test');
   try {
     await safeLoadInfo();
-    // 不等待，讓它在背景執行，但必須捕獲錯誤避免未處理的 Promise rejection
-    sendMonthlyReview().catch(err => {
-      console.error('Error in background sendMonthlyReview (test):', err);
+    // 等待執行結果，以便除錯
+    const result = await sendMonthlyReview();
+    res.status(200).json({
+      success: true,
+      message: 'Monthly review test process completed',
+      details: result
     });
-    res.status(200).json({ success: true, message: 'Monthly review test process started' });
   } catch (err) {
     console.error('Error in /cron/monthly-review-test:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: err.message, stack: err.stack });
   }
 });
 
@@ -1327,10 +1330,12 @@ async function sendMonthlyReview() {
     }
 
     console.log(`Monthly review summary: ${sentCount} sent, ${skippedCount} skipped, ${errorCount} errors`);
+    return { sentCount, skippedCount, errorCount };
   } catch (error) {
     console.error('Critical error in sendMonthlyReview:', error);
     console.error('Error stack:', error.stack);
     // 不要 throw，避免導致未處理的異常
+    return { error: error.message };
   }
 }
 
@@ -1580,26 +1585,30 @@ if (missingEnvVars.length > 0) {
   console.warn('Service may not function correctly without these variables.');
 }
 
-app.listen(port, '0.0.0.0', () => {
-  console.log(`========================================`);
-  console.log(`隙音 LINE Bot 服務已啟動`);
-  console.log(`Port: ${port}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Start Time: ${new Date().toISOString()}`);
-  console.log(`Node Version: ${process.version}`);
-  const memUsage = process.memoryUsage();
-  console.log(`Memory: ${Math.round(memUsage.heapUsed / 1024 / 1024)}MB / ${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`);
-  console.log(`========================================`);
-}).on('error', (err) => {
-  console.error('========================================');
-  console.error('CRITICAL: Failed to start server!');
-  console.error('Time:', new Date().toISOString());
-  console.error('Error:', err);
-  console.error('Stack:', err.stack);
-  console.error('========================================');
-  // 只有在啟動失敗時才退出，這是合理的
-  process.exit(1);
-});
+if (require.main === module) {
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`========================================`);
+    console.log(`隙音 LINE Bot 服務已啟動`);
+    console.log(`Port: ${port}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`Start Time: ${new Date().toISOString()}`);
+    console.log(`Node Version: ${process.version}`);
+    const memUsage = process.memoryUsage();
+    console.log(`Memory: ${Math.round(memUsage.heapUsed / 1024 / 1024)}MB / ${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`);
+    console.log(`========================================`);
+  }).on('error', (err) => {
+    console.error('========================================');
+    console.error('CRITICAL: Failed to start server!');
+    console.error('Time:', new Date().toISOString());
+    console.error('Error:', err);
+    console.error('Stack:', err.stack);
+    console.error('========================================');
+    // 只有在啟動失敗時才退出，這是合理的
+    process.exit(1);
+  });
+}
+
+module.exports = app;
 
 // 定期記錄服務狀態（每小時一次），幫助診斷問題
 setInterval(() => {
