@@ -317,36 +317,16 @@ app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
     if (tomorrow.getDate() === 1) {
       console.log('Last day of month detected, starting monthly review process...');
 
-      // 設置超時保護：如果 5 秒內無法載入，先返回響應
-      const loadPromise = safeLoadInfo();
-      const timeoutPromise = new Promise((resolve) =>
-        setTimeout(() => resolve('timeout'), 5000)
-      );
+      // 在 Serverless 環境 (如 Vercel) 必須等待執行完成，不能在背景執行
+      await safeLoadInfo();
+      const result = await sendMonthlyReview(today);
 
-      const loadResult = await Promise.race([loadPromise, timeoutPromise]);
-
-      if (loadResult === 'timeout') {
-        console.warn('safeLoadInfo timeout, starting monthly review in background anyway');
-        // 即使超時，也在背景執行（可能已經載入過）
-        sendMonthlyReview().catch(err => {
-          console.error('Error in background sendMonthlyReview (after timeout):', err);
-        });
-        res.status(200).json({
-          success: true,
-          message: 'Monthly review process started (loadInfo timeout, running in background)',
-          warning: 'Spreadsheet load timeout, but process started'
-        });
-      } else {
-        // 成功載入，在背景執行
-        sendMonthlyReview().catch(err => {
-          console.error('Error in background sendMonthlyReview:', err);
-        });
-        res.status(200).json({
-          success: true,
-          message: 'Monthly review process started',
-          executionTime: `${Date.now() - startTime}ms`
-        });
-      }
+      res.status(200).json({
+        success: true,
+        message: 'Monthly review process completed',
+        executionTime: `${Date.now() - startTime}ms`,
+        details: result
+      });
     } else {
       res.status(200).json({
         success: true,
@@ -372,12 +352,24 @@ app.get('/cron/monthly-review', verifyCronSecret, async (req, res) => {
 app.get('/cron/monthly-review-test', verifyCronSecret, async (req, res) => {
   console.log('TEST endpoint triggered: /cron/monthly-review-test');
   try {
+    const dateParam = req.query.date; // 格式: YYYY-MM-DD
+    let targetDate = new Date();
+
+    if (dateParam) {
+      targetDate = new Date(dateParam);
+      if (isNaN(targetDate.getTime())) {
+        throw new Error('Invalid date format. Use YYYY-MM-DD');
+      }
+      console.log(`Using target date from query: ${targetDate.toISOString()}`);
+    }
+
     await safeLoadInfo();
     // 等待執行結果，以便除錯
-    const result = await sendMonthlyReview();
+    const result = await sendMonthlyReview(targetDate);
     res.status(200).json({
       success: true,
       message: 'Monthly review test process completed',
+      targetDate: targetDate.toISOString(),
       details: result
     });
   } catch (err) {
@@ -776,18 +768,21 @@ async function handlePostback(event) {
 
       case 'start_question':
         // 使用者點擊按鈕，直接為該使用者發送問題
-        await sendDailyQuestionForUser(userId);
-        // 這是一個 push message，所以不需要 replyToken
-        // 但為了確保用戶知道操作已處理，可以發送一個確認消息
-        try {
-          await client.replyMessage(replyToken, {
-            type: 'text',
-            text: '好的，正在為您發送今天的問題...'
-          });
-        } catch (replyError) {
-          // replyToken 可能已過期，這是正常的（因為 sendDailyQuestionForUser 可能需要時間）
-          console.warn(`[handlePostback] Could not send confirmation (replyToken may be expired):`, replyError.message);
+        const result = await sendDailyQuestionForUser(userId);
+
+        // 如果發送失敗，才通知用戶
+        if (!result.sent) {
+          try {
+            await client.replyMessage(replyToken, {
+              type: 'text',
+              text: '抱歉，發送問題時出現錯誤，請稍後再試。'
+            });
+          } catch (replyError) {
+            console.error(`[handlePostback] Failed to send error message:`, replyError);
+          }
         }
+        // 如果成功，不發送多餘的 "正在發送..." 訊息，因為用戶已經收到問題了 (Push Message)
+        console.log(`[handlePostback] Question sent to ${userId}, skipping redundant confirmation message.`);
         break;
 
       case 'how_to_play':
@@ -1291,7 +1286,7 @@ async function sendSaturdayReview() {
   }
 }
 
-async function sendMonthlyReview() {
+async function sendMonthlyReview(targetDate = new Date()) {
   try {
     const userSheet = doc.sheetsByTitle['Users'];
     const insightsSheet = doc.sheetsByTitle['MonthlyInsights'];
@@ -1314,18 +1309,18 @@ async function sendMonthlyReview() {
       const userId = userRow.get('userId');
 
       try {
-        const hasEnoughData = await hasEnoughMonthlyData(userId);
+        const hasEnoughData = await hasEnoughMonthlyData(userId, targetDate);
 
         if (hasEnoughData) {
           console.log(`Generating monthly insight for user ${userId}`);
-          const insightText = await generateMonthlyAiInsight(userId);
+          const insightText = await generateMonthlyAiInsight(userId, targetDate);
 
           // 發送給使用者
           await client.pushMessage(userId, { type: 'text', text: insightText });
 
           // 保存到 MonthlyInsights Sheet
           const now = new Date();
-          const monthString = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+          const monthString = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, '0')}`;
           await insightsSheet.addRow({
             InsightID: 'I' + now.getTime(),
             UserID: userId,
@@ -1403,12 +1398,11 @@ async function checkTodayAnswer(userId) {
   return false;
 }
 
-async function hasEnoughMonthlyData(userId) {
+async function hasEnoughMonthlyData(userId, targetDate = new Date()) {
   const answerSheet = doc.sheetsByTitle['Answers'];
   const allAnswers = await answerSheet.getRows();
-  const now = new Date();
-  const currentMonth = now.getMonth();
-  const currentYear = now.getFullYear();
+  const currentMonth = targetDate.getMonth();
+  const currentYear = targetDate.getFullYear();
 
   const monthlyAnswers = allAnswers.filter(row => {
     if (row.get('userId') !== userId) return false;
@@ -1418,8 +1412,8 @@ async function hasEnoughMonthlyData(userId) {
 
   if (monthlyAnswers.length === 0) return false;
   const uniqueWeeks = new Set(monthlyAnswers.map(row => row.get('week')));
-  // 至少要有兩週以上的內容才產生 AI 總結
-  return uniqueWeeks.size >= 2;
+  // 至少要有 1 週以上的內容才產生 AI 總結 (放寬限制，之前是 2 週)
+  return uniqueWeeks.size >= 1;
 }
 
 async function getWeeklyAnswerRows(userId) {
@@ -1498,12 +1492,11 @@ async function generateAiInsight(userId) {
   }
 }
 
-async function generateMonthlyAiInsight(userId) {
+async function generateMonthlyAiInsight(userId, targetDate = new Date()) {
   const answerSheet = doc.sheetsByTitle['Answers'];
   const allAnswers = await answerSheet.getRows();
-  const now = new Date();
-  const currentMonth = now.getMonth();
-  const currentYear = now.getFullYear();
+  const currentMonth = targetDate.getMonth();
+  const currentYear = targetDate.getFullYear();
 
   const monthlyAnswers = allAnswers.filter(row => {
     if (row.get('userId') !== userId) return false;
